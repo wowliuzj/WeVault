@@ -14,6 +14,14 @@ class TokenStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class WechatLoginStatus(StrEnum):
+    WAITING_SCAN = "waiting_scan"
+    SCANNED = "scanned"
+    CONFIRMED = "confirmed"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
 class SourceStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"

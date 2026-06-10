@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="change-me", min_length=8)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
+    wechat_browser_headless: bool = True
+    wechat_login_timeout_seconds: int = 300
     cors_origins: list[str] = [
         "http://localhost:5725",
         "http://127.0.0.1:5725",

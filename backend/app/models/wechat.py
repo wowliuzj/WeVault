@@ -9,7 +9,11 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-from app.models.enums import SourceFrom, SourceStatus, TokenStatus
+from app.models.enums import SourceFrom, SourceStatus, TokenStatus, WechatLoginStatus
+
+
+def enum_values(enum_cls: type) -> list[str]:
+    return [item.value for item in enum_cls]
 
 
 class WechatAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -22,7 +26,7 @@ class WechatAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     username: Mapped[str | None] = mapped_column(String(120))
     biz: Mapped[str | None] = mapped_column(String(120))
     token_status: Mapped[TokenStatus] = mapped_column(
-        Enum(TokenStatus, name="token_status"),
+        Enum(TokenStatus, name="token_status", values_callable=enum_values),
         default=TokenStatus.UNKNOWN,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -48,7 +52,7 @@ class WechatSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[TokenStatus] = mapped_column(
-        Enum(TokenStatus, name="wechat_session_status"),
+        Enum(TokenStatus, name="wechat_session_status", values_callable=enum_values),
         default=TokenStatus.UNKNOWN,
     )
 
@@ -92,3 +96,23 @@ class WechatSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     wechat_account = relationship("WechatAccount", back_populates="sources")
     articles = relationship("Article", back_populates="source")
 
+
+class WechatLoginSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "wechat_login_sessions"
+
+    user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    login_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    status: Mapped[WechatLoginStatus] = mapped_column(
+        Enum(
+            WechatLoginStatus,
+            name="wechat_login_status",
+            values_callable=enum_values,
+        ),
+        default=WechatLoginStatus.WAITING_SCAN,
+        index=True,
+    )
+    qr_url: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict | None] = mapped_column(JSONB)

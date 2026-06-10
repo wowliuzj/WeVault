@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
-import { apiRequest, getAuthHeaders, type TokenResponse, type User } from "./api";
+import {
+  apiRequest,
+  getAuthHeaders,
+  type TokenResponse,
+  type User,
+  type WechatAccount,
+  type WechatLoginSession,
+} from "./api";
 
 type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "settings";
 type AuthMode = "login" | "register";
@@ -123,14 +130,44 @@ const authForm = ref({
   password: "",
   displayName: "",
 });
+const wechatAccount = ref<WechatAccount | null>(null);
+const wechatLoading = ref(false);
+const wechatLoginLoading = ref(false);
+const wechatLoginError = ref("");
+const wechatLoginSession = ref<WechatLoginSession | null>(null);
+let wechatLoginTimer: number | undefined;
 
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
 const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
+const showWechatLoginModal = computed(() => Boolean(wechatLoginSession.value || wechatLoginError.value));
+const showWechatLoginLoading = computed(
+  () => wechatLoginLoading.value && !showWechatLoginModal.value,
+);
+const wechatStatusLabel = computed(() => {
+  if (wechatLoading.value) {
+    return "读取中";
+  }
+  return wechatAccount.value ? "有效" : "未授权";
+});
+const wechatStatusNote = computed(() => {
+  if (wechatLoading.value) {
+    return "正在读取授权状态";
+  }
+  if (!wechatAccount.value) {
+    return "扫码后可采集公众号文章";
+  }
+  return `当前公众号：${wechatAccount.value.nickname}`;
+});
+const wechatExpiresLabel = computed(() => formatDateTime(wechatAccount.value?.expires_at));
 
 function setSession(response: TokenResponse) {
   token.value = response.access_token;
   currentUser.value = response.user;
   localStorage.setItem("wevault_token", response.access_token);
+}
+
+function authHeaders(): HeadersInit {
+  return getAuthHeaders(token.value);
 }
 
 async function loadCurrentUser() {
@@ -142,6 +179,7 @@ async function loadCurrentUser() {
     currentUser.value = await apiRequest<User>("/auth/me", {
       headers: getAuthHeaders(token.value),
     });
+    await loadWechatAccount();
   } catch {
     logout();
   }
@@ -170,6 +208,7 @@ async function submitAuth() {
       body: JSON.stringify(payload),
     });
     setSession(response);
+    await loadWechatAccount();
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "登录失败";
   } finally {
@@ -185,6 +224,10 @@ function switchAuthMode(mode: AuthMode) {
 function setView(viewId: ViewId) {
   activeView.value = viewId;
   mobileMenuOpen.value = false;
+
+  if (viewId === "auth") {
+    void loadWechatAccount();
+  }
 }
 
 function toggleSidebar() {
@@ -208,6 +251,8 @@ async function logout() {
   const activeToken = token.value;
   token.value = "";
   currentUser.value = null;
+  wechatAccount.value = null;
+  closeWechatLogin();
   userMenuOpen.value = false;
   localStorage.removeItem("wevault_token");
 
@@ -219,6 +264,109 @@ async function logout() {
   }
 }
 
+async function loadWechatAccount() {
+  if (!token.value) {
+    return;
+  }
+
+  wechatLoading.value = true;
+  try {
+    wechatAccount.value = await apiRequest<WechatAccount | null>("/wechat/accounts/current", {
+      headers: authHeaders(),
+    });
+  } finally {
+    wechatLoading.value = false;
+  }
+}
+
+function stopWechatLoginPolling() {
+  if (wechatLoginTimer !== undefined) {
+    window.clearInterval(wechatLoginTimer);
+    wechatLoginTimer = undefined;
+  }
+}
+
+async function pollWechatLoginStatus(loginId: string) {
+  if (!token.value) {
+    return;
+  }
+
+  try {
+    const session = await apiRequest<WechatLoginSession>(`/wechat/login/${loginId}/status`, {
+      headers: authHeaders(),
+    });
+    wechatLoginSession.value = session;
+
+    if (["confirmed", "expired", "failed"].includes(session.status)) {
+      stopWechatLoginPolling();
+      if (session.status === "confirmed") {
+        await loadWechatAccount();
+        closeWechatLogin();
+      }
+    }
+  } catch (error) {
+    wechatLoginError.value = error instanceof Error ? error.message : "获取扫码状态失败";
+    stopWechatLoginPolling();
+  }
+}
+
+async function startWechatLogin() {
+  if (!token.value) {
+    return;
+  }
+
+  stopWechatLoginPolling();
+  wechatLoginLoading.value = true;
+  wechatLoginError.value = "";
+  wechatLoginSession.value = null;
+
+  try {
+    const session = await apiRequest<WechatLoginSession>("/wechat/login/qrcode", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    wechatLoginSession.value = session;
+    wechatLoginTimer = window.setInterval(() => {
+      void pollWechatLoginStatus(session.login_id);
+    }, 2500);
+  } catch (error) {
+    wechatLoginError.value = error instanceof Error ? error.message : "创建扫码登录失败";
+  } finally {
+    wechatLoginLoading.value = false;
+  }
+}
+
+function closeWechatLogin() {
+  stopWechatLoginPolling();
+  wechatLoginSession.value = null;
+  wechatLoginError.value = "";
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) {
+    return "暂未获取";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+async function logoutWechatAccount() {
+  if (!token.value) {
+    return;
+  }
+
+  await apiRequest("/wechat/accounts/logout", {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  await loadWechatAccount();
+}
+
 onMounted(() => {
   document.addEventListener("click", closeUserMenu);
   void loadCurrentUser();
@@ -226,6 +374,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener("click", closeUserMenu);
+  stopWechatLoginPolling();
 });
 </script>
 
@@ -376,8 +525,32 @@ onBeforeUnmount(() => {
         <div class="metric-grid">
           <article class="metric">
             <div class="metric-label">授权状态</div>
-            <div class="metric-value status-good">有效</div>
-            <div class="metric-note">最近验证：12 分钟前</div>
+            <div class="metric-value" :class="wechatAccount ? 'status-good' : 'status-warning'">
+              {{ wechatStatusLabel }}
+            </div>
+            <div class="metric-note">{{ wechatStatusNote }}</div>
+            <div v-if="wechatAccount" class="wechat-account-card compact">
+              <img
+                v-if="wechatAccount.avatar_url"
+                :src="wechatAccount.avatar_url"
+                alt=""
+                class="wechat-avatar"
+              />
+              <span v-else class="wechat-avatar fallback">微</span>
+              <div>
+                <strong>{{ wechatAccount.nickname }}</strong>
+                <span>到期：{{ wechatExpiresLabel }}</span>
+              </div>
+            </div>
+            <button
+              v-if="!wechatAccount"
+              class="small-button metric-action"
+              type="button"
+              :disabled="wechatLoginLoading"
+              @click="startWechatLogin"
+            >
+              扫码授权
+            </button>
           </article>
           <article class="metric">
             <div class="metric-label">公众号源</div>
@@ -470,17 +643,47 @@ onBeforeUnmount(() => {
               <h2>微信公众号授权</h2>
               <p>第一版每个用户只能启用一个公众号登录态，数据库保留多授权扩展能力。</p>
             </div>
-            <button class="primary-button" type="button">扫码授权</button>
+            <button class="primary-button" type="button" :disabled="wechatLoginLoading" @click="startWechatLogin">
+              {{ wechatAccount ? "重新授权" : "扫码授权" }}
+            </button>
           </div>
-          <div class="auth-box">
+          <div v-if="wechatLoading" class="auth-box">
             <div class="auth-state">
-              <span class="status-dot"></span>
+              <span class="activity-dot pending"></span>
               <div>
-                <strong>已连接：VaultTech 内容助手</strong>
-                <span>Token 有效，Cookie 最近验证于 2026-06-10 14:48</span>
+                <strong>正在读取授权状态</strong>
+                <span>请稍候</span>
               </div>
             </div>
-            <button class="ghost-button" type="button">重新验证</button>
+          </div>
+          <div v-else-if="wechatAccount" class="auth-box">
+            <div class="auth-state">
+              <img
+                v-if="wechatAccount.avatar_url"
+                :src="wechatAccount.avatar_url"
+                alt=""
+                class="wechat-avatar"
+              />
+              <span v-else class="wechat-avatar fallback">微</span>
+              <div>
+                <strong>已连接：{{ wechatAccount.nickname }}</strong>
+                <span>
+                  Token {{ wechatAccount.token_status }} · 到期：{{ wechatExpiresLabel }}
+                </span>
+                <span>最近验证：{{ formatDateTime(wechatAccount.last_verified_at) }}</span>
+              </div>
+            </div>
+            <button class="ghost-button" type="button" @click="logoutWechatAccount">退出授权</button>
+          </div>
+          <div v-else class="auth-box">
+            <div class="auth-state">
+              <span class="activity-dot pending"></span>
+              <div>
+                <strong>未连接微信公众号</strong>
+                <span>扫码授权后才能搜索公众号源和采集文章列表。</span>
+              </div>
+            </div>
+            <button class="ghost-button" type="button" @click="startWechatLogin">扫码授权</button>
           </div>
         </section>
       </section>
@@ -627,5 +830,43 @@ onBeforeUnmount(() => {
         </section>
       </section>
     </main>
+
+    <div v-if="showWechatLoginLoading" class="loading-backdrop" aria-live="polite">
+      <div class="loading-card">
+        <div class="loading-gif" aria-hidden="true"></div>
+        <span>正在生成扫码二维码</span>
+      </div>
+    </div>
+
+    <div v-if="showWechatLoginModal" class="modal-backdrop">
+      <section
+        class="modal-dialog wechat-login-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="wechat-login-title"
+      >
+        <button class="modal-close" type="button" aria-label="关闭扫码授权" @click="closeWechatLogin">
+          ×
+        </button>
+        <div class="modal-header">
+          <div>
+            <h2 id="wechat-login-title">扫码授权</h2>
+            <p>二维码有效期 5 分钟，扫码成功后授权状态会自动更新。</p>
+          </div>
+        </div>
+        <div v-if="wechatLoginError" class="auth-error">{{ wechatLoginError }}</div>
+        <div v-else-if="wechatLoginSession" class="wechat-login-box">
+          <div class="qr-box">
+            <img v-if="wechatLoginSession.qr_url" :src="wechatLoginSession.qr_url" alt="微信扫码登录二维码" />
+            <span v-else>QR</span>
+          </div>
+          <div>
+            <strong>状态：{{ wechatLoginSession.status }}</strong>
+            <span>{{ wechatLoginSession.message || "等待微信扫码确认" }}</span>
+            <span>过期时间：{{ wechatLoginSession.expires_at }}</span>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
