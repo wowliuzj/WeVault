@@ -931,6 +931,14 @@ onBeforeUnmount(() => {
             <strong>状态：{{ wechatLoginSession.status }}</strong>
             <span>{{ wechatLoginSession.message || "等待微信扫码确认" }}</span>
             <span>过期时间：{{ wechatLoginSession.expires_at }}</span>
+            <a
+              class="register-link"
+              href="https://mp.weixin.qq.com/cgi-bin/registermidpage?action=index&weblogo=1&lang=zh_CN"
+              target="_blank"
+              rel="noreferrer"
+            >
+              注册新的公众号
+            </a>
           </div>
         </div>
       </section>

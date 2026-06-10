@@ -891,6 +891,25 @@ tr:last-child td {
   font-size: 13px;
 }
 
+.register-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.register-link:hover {
+  border-color: var(--accent);
+  background: #eef5ff;
+}
+
 .qr-box {
   display: grid;
   place-items: center;
