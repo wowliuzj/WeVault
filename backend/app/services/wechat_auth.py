@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -123,3 +124,65 @@ async def deactivate_active_wechat_account(db: AsyncSession, user: User) -> None
         .values(is_active=False, token_status=TokenStatus.INVALID)
     )
     await db.commit()
+
+
+async def refresh_active_wechat_account(
+    db: AsyncSession,
+    user: User,
+) -> WechatAccountResponse | None:
+    result = await db.execute(
+        select(WechatAccount)
+        .where(WechatAccount.user_id == user.id, WechatAccount.is_active.is_(True))
+        .order_by(WechatAccount.updated_at.desc())
+        .limit(1)
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        return None
+
+    session_result = await db.execute(
+        select(WechatSession)
+        .where(WechatSession.wechat_account_id == account.id)
+        .order_by(WechatSession.created_at.desc())
+        .limit(1)
+    )
+    session = session_result.scalar_one_or_none()
+    if session is None or not session.token_encrypted or not session.cookies_encrypted:
+        account.token_status = TokenStatus.INVALID
+        await db.commit()
+        raise WechatLoginDriverError("没有可刷新的授权登录态，请重新扫码授权。")
+
+    try:
+        refresh_result = await wechat_login_manager.refresh_authorization(
+            session.token_encrypted,
+            json.loads(session.cookies_encrypted),
+        )
+    except json.JSONDecodeError as exc:
+        account.token_status = TokenStatus.INVALID
+        session.status = TokenStatus.INVALID
+        await db.commit()
+        raise WechatLoginDriverError("授权登录态数据异常，请重新扫码授权。") from exc
+    except WechatLoginDriverError:
+        account.token_status = TokenStatus.INVALID
+        session.status = TokenStatus.INVALID
+        await db.commit()
+        raise
+
+    now = datetime.now(UTC)
+    account_info = refresh_result["account_info"]
+    account.nickname = account_info["nickname"]
+    account.avatar_url = account_info["avatar_url"] or account.avatar_url
+    account.token_status = TokenStatus.VALID
+    account.last_verified_at = now
+
+    session.token_encrypted = refresh_result["token"]
+    session.cookies_encrypted = json.dumps(refresh_result["cookies"], ensure_ascii=False)
+    session.raw_session_encrypted = json.dumps(refresh_result, ensure_ascii=False, default=str)
+    session.expires_at = refresh_result["expires_at"] or session.expires_at
+    session.last_used_at = now
+    session.status = TokenStatus.VALID
+
+    await db.commit()
+    await db.refresh(account)
+    await db.refresh(session)
+    return serialize_wechat_account(account, session)

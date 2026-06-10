@@ -12,6 +12,7 @@ import {
 
 type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "settings";
 type AuthMode = "login" | "register";
+type ToastKind = "success" | "error";
 
 const views: Array<{ id: ViewId; label: string; icon: string; title: string; subtitle: string }> = [
   {
@@ -133,9 +134,13 @@ const authForm = ref({
 const wechatAccount = ref<WechatAccount | null>(null);
 const wechatLoading = ref(false);
 const wechatLoginLoading = ref(false);
+const wechatRefreshLoading = ref(false);
 const wechatLoginError = ref("");
+const wechatRefreshError = ref("");
 const wechatLoginSession = ref<WechatLoginSession | null>(null);
+const toast = ref<{ kind: ToastKind; message: string } | null>(null);
 let wechatLoginTimer: number | undefined;
+let toastTimer: number | undefined;
 
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
 const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
@@ -247,6 +252,17 @@ function closeUserMenu() {
   userMenuOpen.value = false;
 }
 
+function showToast(kind: ToastKind, message: string) {
+  toast.value = { kind, message };
+  if (toastTimer !== undefined) {
+    window.clearTimeout(toastTimer);
+  }
+  toastTimer = window.setTimeout(() => {
+    toast.value = null;
+    toastTimer = undefined;
+  }, 2800);
+}
+
 async function logout() {
   const activeToken = token.value;
   token.value = "";
@@ -276,6 +292,29 @@ async function loadWechatAccount() {
     });
   } finally {
     wechatLoading.value = false;
+  }
+}
+
+async function refreshWechatAccount() {
+  if (!token.value || !wechatAccount.value) {
+    return;
+  }
+
+  wechatRefreshLoading.value = true;
+  wechatRefreshError.value = "";
+  try {
+    wechatAccount.value = await apiRequest<WechatAccount>("/wechat/accounts/refresh", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    wechatRefreshError.value = "";
+    showToast("success", "授权刷新成功");
+  } catch (error) {
+    wechatRefreshError.value = error instanceof Error ? error.message : "刷新授权失败";
+    showToast("error", wechatRefreshError.value);
+    await loadWechatAccount();
+  } finally {
+    wechatRefreshLoading.value = false;
   }
 }
 
@@ -375,6 +414,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", closeUserMenu);
   stopWechatLoginPolling();
+  if (toastTimer !== undefined) {
+    window.clearTimeout(toastTimer);
+  }
 });
 </script>
 
@@ -643,10 +685,17 @@ onBeforeUnmount(() => {
               <h2>微信公众号授权</h2>
               <p>第一版每个用户只能启用一个公众号登录态，数据库保留多授权扩展能力。</p>
             </div>
-            <button class="primary-button" type="button" :disabled="wechatLoginLoading" @click="startWechatLogin">
-              {{ wechatAccount ? "重新授权" : "扫码授权" }}
+            <button
+              v-if="!wechatAccount"
+              class="primary-button"
+              type="button"
+              :disabled="wechatLoginLoading"
+              @click="startWechatLogin"
+            >
+              扫码授权
             </button>
           </div>
+          <p v-if="wechatRefreshError" class="auth-error">{{ wechatRefreshError }}</p>
           <div v-if="wechatLoading" class="auth-box">
             <div class="auth-state">
               <span class="activity-dot pending"></span>
@@ -673,7 +722,25 @@ onBeforeUnmount(() => {
                 <span>最近验证：{{ formatDateTime(wechatAccount.last_verified_at) }}</span>
               </div>
             </div>
-            <button class="ghost-button" type="button" @click="logoutWechatAccount">退出授权</button>
+            <div class="inline-actions auth-row-actions">
+              <button
+                class="ghost-button"
+                type="button"
+                :disabled="wechatRefreshLoading"
+                @click="refreshWechatAccount"
+              >
+                {{ wechatRefreshLoading ? "刷新中..." : "刷新授权" }}
+              </button>
+              <button
+                class="ghost-button"
+                type="button"
+                :disabled="wechatLoginLoading"
+                @click="startWechatLogin"
+              >
+                重新授权
+              </button>
+              <button class="ghost-button" type="button" @click="logoutWechatAccount">退出授权</button>
+            </div>
           </div>
           <div v-else class="auth-box">
             <div class="auth-state">
@@ -867,6 +934,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
+    </div>
+
+    <div v-if="toast" class="toast" :class="toast.kind" role="status">
+      {{ toast.message }}
     </div>
   </div>
 </template>

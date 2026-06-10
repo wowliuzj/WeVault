@@ -839,6 +839,31 @@ tr:last-child td {
   font-size: 13px;
 }
 
+.toast {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 80;
+  max-width: min(360px, calc(100vw - 36px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #ffffff;
+  box-shadow: 0 18px 44px rgba(17, 24, 32, 0.18);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.toast.success {
+  border-color: #b8e1c7;
+  color: var(--good);
+}
+
+.toast.error {
+  border-color: #f0b5ae;
+  color: var(--danger);
+}
+
 .wechat-login-modal .wechat-login-box {
   grid-template-columns: 180px 1fr;
 }

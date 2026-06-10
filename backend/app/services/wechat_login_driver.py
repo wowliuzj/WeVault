@@ -92,6 +92,37 @@ class WechatMpLoginManager:
         for login_id in list(self._sessions):
             await self.close(login_id)
 
+    async def refresh_authorization(
+        self,
+        token: str,
+        cookies: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        headers = {**MP_HEADERS, "Cookie": self._cookie_header(cookies)}
+        async with httpx.AsyncClient(
+            headers=headers,
+            timeout=httpx.Timeout(20.0, connect=10.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                f"{MP_BASE_URL}/cgi-bin/home",
+                params={"t": "home/index", "token": token, "lang": "zh_CN"},
+            )
+            response.raise_for_status()
+            if "home" not in str(response.url) or not self._has_login_indicator(response.text):
+                raise WechatLoginDriverError("授权登录态已失效，请重新扫码授权。")
+
+            refreshed_cookies = self._merge_cookies(
+                cookies,
+                self._parse_set_cookies(response.headers.get_list("set-cookie")),
+            )
+            return {
+                "token": self._extract_token(str(response.url)) or token,
+                "cookies": refreshed_cookies,
+                "expires_at": self._cookies_expires_at(refreshed_cookies),
+                "account_info": self._extract_account_info(response.text),
+                "url": str(response.url),
+            }
+
     async def _start_login_session(self, client: httpx.AsyncClient) -> None:
         payload = {
             "userlang": "zh_CN",
@@ -247,10 +278,7 @@ class WechatMpLoginManager:
             )
             response.raise_for_status()
             page_html = response.text
-            return {
-                "nickname": self._extract_js_string(page_html, "nick_name") or "已授权公众号",
-                "avatar_url": self._extract_js_string(page_html, "head_img") or "",
-            }
+            return self._extract_account_info(page_html)
         except httpx.HTTPError:
             return {"nickname": "已授权公众号", "avatar_url": ""}
 
@@ -380,6 +408,16 @@ class WechatMpLoginManager:
             return None
         return html.unescape(match.group("value"))
 
+    def _extract_account_info(self, page_html: str) -> dict[str, str]:
+        return {
+            "nickname": self._extract_js_string(page_html, "nick_name") or "已授权公众号",
+            "avatar_url": self._extract_js_string(page_html, "head_img") or "",
+        }
+
+    def _has_login_indicator(self, page_html: str) -> bool:
+        indicators = ("wx_app_name", "user_name", "nick_name", "head_img", "data_ticket")
+        return any(indicator in page_html for indicator in indicators)
+
     def _parse_set_cookies(self, set_cookies: list[str]) -> list[dict[str, Any]]:
         cookies: list[dict[str, Any]] = []
         for value in set_cookies:
@@ -395,6 +433,24 @@ class WechatMpLoginManager:
                         pass
                 cookies.append(cookie)
         return cookies
+
+    def _merge_cookies(
+        self,
+        current_cookies: list[dict[str, Any]],
+        new_cookies: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        cookie_map = {cookie["name"]: cookie for cookie in current_cookies if cookie.get("name")}
+        for cookie in new_cookies:
+            if cookie.get("value") and cookie["value"] != "EXPIRED":
+                cookie_map[cookie["name"]] = cookie
+        return list(cookie_map.values())
+
+    def _cookie_header(self, cookies: list[dict[str, Any]]) -> str:
+        return "; ".join(
+            f"{cookie['name']}={cookie['value']}"
+            for cookie in cookies
+            if cookie.get("name") and cookie.get("value") and cookie["value"] != "EXPIRED"
+        )
 
     def _cookies_expires_at(self, cookies: list[dict[str, Any]]) -> datetime | None:
         now = datetime.now(UTC)

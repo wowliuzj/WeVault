@@ -10,7 +10,9 @@ from app.services.wechat_auth import (
     deactivate_active_wechat_account,
     get_active_wechat_account,
     get_login_session,
+    refresh_active_wechat_account,
 )
+from app.services.wechat_login_driver import WechatLoginDriverError
 
 router = APIRouter()
 
@@ -53,3 +55,23 @@ async def logout_wechat_account(
 ) -> dict[str, bool]:
     await deactivate_active_wechat_account(db, current_user)
     return {"ok": True}
+
+
+@router.post("/accounts/refresh", response_model=WechatAccountResponse)
+async def refresh_wechat_account(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WechatAccountResponse:
+    try:
+        account = await refresh_active_wechat_account(db, current_user)
+    except WechatLoginDriverError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wechat account not found",
+        )
+    return account
