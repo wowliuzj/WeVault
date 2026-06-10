@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
+import { apiRequest, getAuthHeaders, type TokenResponse, type User } from "./api";
+
 type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "settings";
+type AuthMode = "login" | "register";
 
 const views: Array<{ id: ViewId; label: string; icon: string; title: string; subtitle: string }> = [
   {
@@ -110,8 +113,74 @@ const activeView = ref<ViewId>("dashboard");
 const sidebarCollapsed = ref(false);
 const mobileMenuOpen = ref(false);
 const userMenuOpen = ref(false);
+const authMode = ref<AuthMode>("login");
+const authLoading = ref(false);
+const authError = ref("");
+const token = ref(localStorage.getItem("wevault_token") || "");
+const currentUser = ref<User | null>(null);
+const authForm = ref({
+  email: "",
+  password: "",
+  displayName: "",
+});
 
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
+const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
+
+function setSession(response: TokenResponse) {
+  token.value = response.access_token;
+  currentUser.value = response.user;
+  localStorage.setItem("wevault_token", response.access_token);
+}
+
+async function loadCurrentUser() {
+  if (!token.value) {
+    return;
+  }
+
+  try {
+    currentUser.value = await apiRequest<User>("/auth/me", {
+      headers: getAuthHeaders(token.value),
+    });
+  } catch {
+    logout();
+  }
+}
+
+async function submitAuth() {
+  authLoading.value = true;
+  authError.value = "";
+
+  try {
+    const path = authMode.value === "login" ? "/auth/login" : "/auth/register";
+    const payload =
+      authMode.value === "login"
+        ? {
+            email: authForm.value.email,
+            password: authForm.value.password,
+          }
+        : {
+            email: authForm.value.email,
+            password: authForm.value.password,
+            display_name: authForm.value.displayName || null,
+          };
+
+    const response = await apiRequest<TokenResponse>(path, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setSession(response);
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : "登录失败";
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+function switchAuthMode(mode: AuthMode) {
+  authMode.value = mode;
+  authError.value = "";
+}
 
 function setView(viewId: ViewId) {
   activeView.value = viewId;
@@ -135,8 +204,24 @@ function closeUserMenu() {
   userMenuOpen.value = false;
 }
 
+async function logout() {
+  const activeToken = token.value;
+  token.value = "";
+  currentUser.value = null;
+  userMenuOpen.value = false;
+  localStorage.removeItem("wevault_token");
+
+  if (activeToken) {
+    await apiRequest("/auth/logout", {
+      method: "POST",
+      headers: getAuthHeaders(activeToken),
+    }).catch(() => undefined);
+  }
+}
+
 onMounted(() => {
   document.addEventListener("click", closeUserMenu);
+  void loadCurrentUser();
 });
 
 onBeforeUnmount(() => {
@@ -145,7 +230,67 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <main v-if="!isAuthenticated" class="auth-page">
+    <section class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-mark">WV</div>
+        <div>
+          <div class="brand-name">WeVault</div>
+          <div class="brand-subtitle">公众号内容库</div>
+        </div>
+      </div>
+
+      <div class="auth-heading">
+        <h1>{{ authMode === "login" ? "登录" : "创建账户" }}</h1>
+        <p>登录后管理公众号源、文章采集任务和导出文件。</p>
+      </div>
+
+      <div class="auth-tabs" role="tablist" aria-label="认证方式">
+        <button
+          type="button"
+          :class="{ active: authMode === 'login' }"
+          @click="switchAuthMode('login')"
+        >
+          登录
+        </button>
+        <button
+          type="button"
+          :class="{ active: authMode === 'register' }"
+          @click="switchAuthMode('register')"
+        >
+          注册
+        </button>
+      </div>
+
+      <form class="auth-form" @submit.prevent="submitAuth">
+        <label>
+          <span>邮箱</span>
+          <input v-model="authForm.email" type="email" autocomplete="email" required />
+        </label>
+        <label v-if="authMode === 'register'">
+          <span>显示名称</span>
+          <input v-model="authForm.displayName" type="text" maxlength="80" autocomplete="name" />
+        </label>
+        <label>
+          <span>密码</span>
+          <input
+            v-model="authForm.password"
+            type="password"
+            autocomplete="current-password"
+            minlength="8"
+            required
+          />
+        </label>
+        <p v-if="authError" class="auth-error">{{ authError }}</p>
+        <button class="primary-button auth-submit" type="submit" :disabled="authLoading">
+          {{ authLoading ? "处理中..." : authMode === "login" ? "登录" : "注册并登录" }}
+        </button>
+      </form>
+    </section>
+  </main>
+
   <div
+    v-else
     class="app-shell"
     :class="{ 'sidebar-collapsed': sidebarCollapsed, 'mobile-menu-open': mobileMenuOpen }"
   >
@@ -203,14 +348,14 @@ onBeforeUnmount(() => {
           :aria-expanded="userMenuOpen"
           @click="toggleUserMenu"
         >
-          <span class="user-avatar">L</span>
+          <span class="user-avatar">{{ currentUser?.email.slice(0, 1).toUpperCase() }}</span>
           <span class="user-copy">
-            <span class="user-name">lin@example.com</span>
+            <span class="user-name">{{ currentUser?.email }}</span>
             <span class="user-role">个人空间</span>
           </span>
         </button>
         <div class="user-menu" :class="{ open: userMenuOpen }" role="menu">
-          <button type="button" role="menuitem">注销</button>
+          <button type="button" role="menuitem" @click.stop="logout">注销</button>
         </div>
       </div>
     </aside>

@@ -4,7 +4,8 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -19,7 +20,11 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
-    source_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("wechat_sources.id"), index=True)
+    source_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("wechat_sources.id"),
+        index=True,
+    )
     wechat_account_id: Mapped[UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("wechat_accounts.id"),
@@ -74,11 +79,19 @@ class ArticleContent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class ArticleComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "article_comments"
     __table_args__ = (
-        UniqueConstraint("article_id", "wechat_comment_id", name="uq_article_comments_article_wechat_id"),
+        UniqueConstraint(
+            "article_id",
+            "wechat_comment_id",
+            name="uq_article_comments_article_wechat_id",
+        ),
     )
 
     user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
-    article_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("articles.id"), index=True)
+    article_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("articles.id"),
+        index=True,
+    )
     wechat_comment_id: Mapped[str] = mapped_column(String(160), index=True)
     nickname: Mapped[str | None] = mapped_column(String(120))
     avatar_url: Mapped[str | None] = mapped_column(Text)
@@ -89,4 +102,3 @@ class ArticleComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
 
     article = relationship("Article", back_populates="comments")
-

@@ -3,6 +3,7 @@ from enum import StrEnum
 
 class UserStatus(StrEnum):
     ACTIVE = "active"
+    RESTRICTED = "restricted"
     DISABLED = "disabled"
 
 
@@ -52,4 +53,3 @@ class ExportFormat(StrEnum):
     DOCX = "docx"
     MARKDOWN = "markdown"
     ZIP = "zip"
-

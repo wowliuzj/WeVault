@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://wevault:wevault@localhost:5432/wevault"
     redis_url: str = "redis://localhost:6379/0"
     secret_key: str = Field(default="change-me", min_length=8)
+    jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
     cors_origins: list[str] = [
         "http://localhost:5725",

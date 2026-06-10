@@ -43,6 +43,7 @@ cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+alembic upgrade head
 python -m app.run
 ```
 

@@ -14,11 +14,14 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[UserStatus] = mapped_column(
-        Enum(UserStatus, name="user_status"),
+        Enum(
+            UserStatus,
+            name="user_status",
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+        ),
         default=UserStatus.ACTIVE,
     )
 
     wechat_accounts = relationship("WechatAccount", back_populates="user")
     sources = relationship("WechatSource", back_populates="user")
     articles = relationship("Article", back_populates="user")
-
