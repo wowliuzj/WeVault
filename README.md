@@ -22,6 +22,16 @@ WeVault/
   docs/      Product and architecture design documents
 ```
 
+The current UI demo can be opened directly at `frontend/demo.html`.
+
+The Vue frontend scaffold lives in `frontend/`:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
 ## Planned Stack
 
 - Frontend: Vue 3, TypeScript, Vite, Naive UI
@@ -34,4 +44,3 @@ WeVault/
 ## MVP Scope
 
 Version 1 intentionally skips workspace collaboration, NotebookLM integration, and AI analysis. Those features can be added after the collection, storage, and export pipeline is stable.
-
