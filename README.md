@@ -28,8 +28,22 @@ The Vue frontend scaffold lives in `frontend/`:
 
 ```bash
 cd frontend
+cp .env.example .env
 npm install
 npm run dev
+```
+
+By default, the frontend runs on `http://localhost:5725` and calls the backend at `http://localhost:5726/api/v1`.
+
+The FastAPI backend scaffold lives in `backend/`:
+
+```bash
+cd backend
+cp .env.example .env
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+python -m app.run
 ```
 
 ## Planned Stack

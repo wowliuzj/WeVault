@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
           class="sidebar-toggle"
           type="button"
           :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-          :aria-expanded="String(!sidebarCollapsed)"
+          :aria-expanded="!sidebarCollapsed"
           @click="toggleSidebar"
         >
           {{ sidebarCollapsed ? "›" : "‹" }}
@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
           class="mobile-menu-button"
           type="button"
           :aria-label="mobileMenuOpen ? '收起菜单' : '展开菜单'"
-          :aria-expanded="String(mobileMenuOpen)"
+          :aria-expanded="mobileMenuOpen"
           @click="toggleMobileMenu"
         >
           <span></span>
@@ -200,7 +200,7 @@ onBeforeUnmount(() => {
           :class="{ active: userMenuOpen }"
           type="button"
           aria-haspopup="menu"
-          :aria-expanded="String(userMenuOpen)"
+          :aria-expanded="userMenuOpen"
           @click="toggleUserMenu"
         >
           <span class="user-avatar">L</span>
