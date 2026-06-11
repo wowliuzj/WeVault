@@ -596,11 +596,82 @@ function taskStatusTag(status: CollectionTask["status"]) {
   return "muted";
 }
 
-function taskProgress(task: CollectionTask) {
-  if (task.progress_total <= 0) {
-    return 0;
+function taskRunMode(task: CollectionTask) {
+  const runMode = task.payload?.run_mode;
+  return typeof runMode === "string" ? runMode : "immediate";
+}
+
+function canStartTask(task: CollectionTask) {
+  const runMode = taskRunMode(task);
+  if (task.status === "running" || task.status === "succeeded") {
+    return false;
   }
-  return Math.round((task.progress_current / task.progress_total) * 100);
+  if (runMode === "recurring") {
+    return ["pending", "failed", "cancelled"].includes(task.status);
+  }
+  if (runMode === "scheduled") {
+    return ["pending", "failed"].includes(task.status);
+  }
+  return false;
+}
+
+function canStopTask(task: CollectionTask) {
+  return task.status === "running";
+}
+
+function canDeleteTask(task: CollectionTask) {
+  return ["pending", "failed", "cancelled", "succeeded"].includes(task.status);
+}
+
+function taskActionNote(task: CollectionTask) {
+  if (task.status === "pending" && taskRunMode(task) === "immediate") {
+    return "等待执行";
+  }
+  return "无操作";
+}
+
+async function startTask(task: CollectionTask) {
+  try {
+    const updatedTask = await apiRequest<CollectionTask>(`/tasks/${task.id}/start`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    tasks.value = tasks.value.map((item) => (item.id === updatedTask.id ? updatedTask : item));
+    showToast("success", "任务已开始");
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "开始任务失败");
+  }
+}
+
+async function stopTask(task: CollectionTask) {
+  try {
+    const updatedTask = await apiRequest<CollectionTask>(`/tasks/${task.id}/stop`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    tasks.value = tasks.value.map((item) => (item.id === updatedTask.id ? updatedTask : item));
+    showToast("success", "任务已停止");
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "停止任务失败");
+  }
+}
+
+async function deleteTask(task: CollectionTask) {
+  const confirmed = window.confirm(`删除任务「${task.id.slice(0, 8)}」？`);
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    await apiRequest(`/tasks/${task.id}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    tasks.value = tasks.value.filter((item) => item.id !== task.id);
+    showToast("success", "任务已删除");
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "删除任务失败");
+  }
 }
 
 async function logout() {
@@ -1483,9 +1554,11 @@ onBeforeUnmount(() => {
                     <th>任务类型</th>
                     <th>任务参数</th>
                     <th>状态</th>
-                    <th>进度</th>
                     <th>创建时间</th>
+                    <th>开始时间</th>
+                    <th>结束时间</th>
                     <th>错误</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1502,9 +1575,41 @@ onBeforeUnmount(() => {
                         {{ taskStatusLabel(task.status) }}
                       </span>
                     </td>
-                    <td><progress :value="taskProgress(task)" max="100"></progress></td>
                     <td>{{ formatDateTime(task.created_at) }}</td>
+                    <td>{{ formatDateTime(task.started_at) }}</td>
+                    <td>{{ formatDateTime(task.finished_at) }}</td>
                     <td>{{ task.error_message || "-" }}</td>
+                    <td>
+                      <div class="task-actions">
+                        <button
+                          v-if="canStartTask(task)"
+                          class="link-button"
+                          type="button"
+                          @click="startTask(task)"
+                        >
+                          开始
+                        </button>
+                        <button
+                          v-if="canStopTask(task)"
+                          class="link-button danger"
+                          type="button"
+                          @click="stopTask(task)"
+                        >
+                          停止
+                        </button>
+                        <button
+                          v-if="canDeleteTask(task)"
+                          class="link-button danger"
+                          type="button"
+                          @click="deleteTask(task)"
+                        >
+                          删除
+                        </button>
+                        <span v-if="!canStartTask(task) && !canStopTask(task) && !canDeleteTask(task)">
+                          {{ taskActionNote(task) }}
+                        </span>
+                      </div>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -1516,12 +1621,42 @@ onBeforeUnmount(() => {
                   <strong>{{ task.task_type }}</strong>
                   <span>{{ task.note }}</span>
                   <span>创建时间：{{ formatDateTime(task.created_at) }}</span>
+                  <span>开始时间：{{ formatDateTime(task.started_at) }}</span>
+                  <span>结束时间：{{ formatDateTime(task.finished_at) }}</span>
                 </div>
                 <div class="task-status-cell">
                   <span class="tag" :class="taskStatusTag(task.status)">
                     {{ taskStatusLabel(task.status) }}
                   </span>
-                  <progress :value="taskProgress(task)" max="100"></progress>
+                </div>
+                <div class="task-actions">
+                  <button
+                    v-if="canStartTask(task)"
+                    class="link-button"
+                    type="button"
+                    @click="startTask(task)"
+                  >
+                    开始
+                  </button>
+                  <button
+                    v-if="canStopTask(task)"
+                    class="link-button danger"
+                    type="button"
+                    @click="stopTask(task)"
+                  >
+                    停止
+                  </button>
+                  <button
+                    v-if="canDeleteTask(task)"
+                    class="link-button danger"
+                    type="button"
+                    @click="deleteTask(task)"
+                  >
+                    删除
+                  </button>
+                  <span v-if="!canStartTask(task) && !canStopTask(task) && !canDeleteTask(task)">
+                    {{ taskActionNote(task) }}
+                  </span>
                 </div>
               </article>
             </div>

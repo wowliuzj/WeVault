@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -40,6 +40,12 @@ class CreateSourceArticleTaskRequest(BaseModel):
     fetch_content: bool = False
     fetch_comments: bool = False
     skip_existing: bool = True
+
+
+def task_run_mode(task: CollectionTask) -> str:
+    payload = task.payload or {}
+    run_mode = payload.get("run_mode")
+    return run_mode if isinstance(run_mode, str) else "immediate"
 
 
 def task_note(task: CollectionTask, source_name: str | None = None) -> str:
@@ -92,6 +98,22 @@ async def get_user_source(db: AsyncSession, user: User, source_id: UUID) -> Wech
     return source
 
 
+async def get_user_task(db: AsyncSession, user: User, task_id: UUID) -> CollectionTask:
+    result = await db.execute(
+        select(CollectionTask).where(
+            CollectionTask.id == task_id,
+            CollectionTask.user_id == user.id,
+        )
+    )
+    task = result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="采集任务不存在。",
+        )
+    return task
+
+
 @router.get("", response_model=list[TaskResponse])
 async def list_tasks(
     current_user: User = Depends(get_current_user),
@@ -142,3 +164,73 @@ async def create_source_article_task(
     await db.commit()
     await db.refresh(task)
     return serialize_task(task, source.name)
+
+
+@router.post("/{task_id}/start", response_model=TaskResponse)
+async def start_task(
+    task_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskResponse:
+    task = await get_user_task(db, current_user, task_id)
+    run_mode = task_run_mode(task)
+    if run_mode == "immediate":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="立即执行任务不支持手动开始。",
+        )
+    if task.status == TaskStatus.RUNNING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="任务已经在运行中。",
+        )
+    if run_mode == "scheduled" and task.status == TaskStatus.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="指定时间任务停止后不能再次开始。",
+        )
+
+    task.status = TaskStatus.PENDING
+    task.finished_at = None
+    task.error_message = None
+    await db.commit()
+    await db.refresh(task)
+    return serialize_task(task)
+
+
+@router.post("/{task_id}/stop", response_model=TaskResponse)
+async def stop_task(
+    task_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskResponse:
+    task = await get_user_task(db, current_user, task_id)
+    if task.status not in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="只有待执行或运行中的任务可以停止。",
+        )
+
+    task.status = TaskStatus.CANCELLED
+    task.finished_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(task)
+    return serialize_task(task)
+
+
+@router.delete("/{task_id}")
+async def delete_task(
+    task_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
+    task = await get_user_task(db, current_user, task_id)
+    if task.status == TaskStatus.RUNNING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="运行中的任务不能删除，请先停止任务。",
+        )
+
+    await db.delete(task)
+    await db.commit()
+    return {"ok": True}

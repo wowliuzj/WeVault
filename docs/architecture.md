@@ -144,3 +144,86 @@ Recommended statuses:
 - `failed`
 - `cancelled`
 
+## Current Worker Implementation
+
+The first implementation uses PostgreSQL as a lightweight task queue. This keeps
+the MVP simple and avoids introducing Redis or a dedicated queue service before
+the collection pipeline is stable.
+
+Run the worker as a separate long-running process:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.worker
+```
+
+The API server and worker are intentionally separate processes:
+
+- The API server handles user actions, creates `collection_tasks`, and exposes
+  start, stop, and delete operations.
+- The worker polls `collection_tasks`, picks one `pending` task at a time, and
+  performs the actual collection work.
+
+Current task acquisition flow:
+
+```text
+Worker loop
+  -> poll collection_tasks where status = pending
+  -> lock one row with SELECT ... FOR UPDATE SKIP LOCKED
+  -> mark task running and set started_at
+  -> execute task handler
+  -> set succeeded/failed/cancelled and finished_at
+```
+
+The polling interval is configured with:
+
+```text
+WORKER_POLL_INTERVAL_SECONDS=2
+```
+
+Current supported worker handler:
+
+- `fetch_source_articles`: fetches the article list for one public account
+  source through the user's active WeChat authorization session and upserts
+  article metadata into `articles`.
+
+The task payload currently carries collection options:
+
+- `source_id`
+- `range`: `7d`, `30d`, `90d`, or `all`
+- `limit`: `30`, `50`, `100`, or `0` for no limit
+- `fetch_content`
+- `fetch_comments`
+- `skip_existing`
+- `run_mode`
+
+Stop behavior is cooperative. The API marks a `pending` or `running` task as
+`cancelled`; the worker checks task status between page requests and article
+writes, then exits the handler when cancellation is detected.
+
+Delete behavior is limited to task records. Tasks can be deleted when their
+status is `pending`, `failed`, `cancelled`, or `succeeded`; `running` tasks must
+be stopped before deletion. Deleting a task does not delete collected articles.
+
+For local debugging, the worker writes lifecycle logs to stdout:
+
+- startup and poll interval
+- no pending task found
+- task acquired and task type
+- task execution start, success, failure, or cancellation
+- article list request page parameters
+- returned item counts and saved article counts
+- stop reasons such as reaching the limit, cutoff time, or last page
+
+## Queue Evolution
+
+PostgreSQL polling is enough for the MVP and local development. When collection
+volume grows, the same task model can be moved behind a dedicated queue such as
+Celery or Dramatiq with Redis:
+
+- Keep `collection_tasks` as the durable task record and UI source of truth.
+- Use Redis/Celery/Dramatiq for dispatching and concurrency control.
+- Keep worker handlers idempotent so retries do not duplicate articles.
+- Continue storing task timestamps, errors, and cancellation state in
+  PostgreSQL.

@@ -47,12 +47,33 @@ alembic upgrade head
 python -m app.run
 ```
 
+Collection tasks are executed by a separate worker process. Start it in another
+terminal after the backend dependencies and database migrations are ready:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.worker
+```
+
+The current worker uses PostgreSQL as a lightweight queue. It polls
+`collection_tasks` for `pending` rows, locks one task, marks it `running`, then
+updates it to `succeeded`, `failed`, or `cancelled`. The poll interval is
+controlled by `WORKER_POLL_INTERVAL_SECONDS` in `backend/.env` and defaults to
+`2` seconds.
+
+For local debugging, the worker prints task lifecycle messages to the console,
+including whether a pending task was found, which task was selected, article
+list page requests, saved article counts, cancellation, success, and failure
+details.
+
 ## Planned Stack
 
 - Frontend: Vue 3, TypeScript, Vite, Naive UI
 - Backend: FastAPI, SQLAlchemy 2.x, Alembic
 - Database: PostgreSQL
-- Queue/cache: Redis with Celery or Dramatiq
+- Current queue: PostgreSQL polling worker
+- Future queue/cache: Redis with Celery or Dramatiq when concurrency needs grow
 - Browser automation: Playwright Chromium
 - Export: Chromium PDF, DOCX generator, Markdown package
 
