@@ -68,6 +68,22 @@ export type SourceSearchResponse = {
   items: SourceSearchItem[];
 };
 
+export type CollectionTask = {
+  id: string;
+  task_type: "fetch_source_articles" | "fetch_article_content" | "fetch_article_comments" | "export_articles";
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  progress_current: number;
+  progress_total: number;
+  target_type: string | null;
+  target_id: string | null;
+  payload: Record<string, unknown> | null;
+  note: string;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,

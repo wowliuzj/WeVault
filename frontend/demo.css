@@ -890,6 +890,7 @@ tr:last-child td {
 }
 
 .modal-form input,
+.modal-form select,
 .modal-form textarea {
   width: 100%;
   border: 1px solid var(--line-strong);
@@ -900,14 +901,43 @@ tr:last-child td {
   resize: vertical;
 }
 
-.modal-form input {
+.modal-form input,
+.modal-form select {
   min-height: 38px;
 }
 
 .modal-form input:focus,
+.modal-form select:focus,
 .modal-form textarea:focus {
   border-color: var(--accent);
   outline: 3px solid rgba(31, 111, 235, 0.12);
+}
+
+.modal-form .checkbox-row,
+.readonly-row {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #ffffff;
+}
+
+.modal-form .checkbox-row input {
+  width: auto;
+  min-height: auto;
+}
+
+.readonly-row {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.readonly-row strong {
+  color: var(--text);
 }
 
 .modal-actions {
@@ -1090,6 +1120,82 @@ tr:last-child td {
 .settings-list {
   display: grid;
   gap: 10px;
+}
+
+.task-status-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.task-table {
+  min-width: 960px;
+  table-layout: fixed;
+}
+
+.task-table th:nth-child(1),
+.task-table td:nth-child(1) {
+  width: 160px;
+}
+
+.task-table th:nth-child(2),
+.task-table td:nth-child(2) {
+  width: 330px;
+}
+
+.task-table th:nth-child(3),
+.task-table td:nth-child(3) {
+  width: 100px;
+}
+
+.task-table th:nth-child(4),
+.task-table td:nth-child(4) {
+  width: 170px;
+}
+
+.task-table th:nth-child(5),
+.task-table td:nth-child(5) {
+  width: 150px;
+}
+
+.task-table th:nth-child(6),
+.task-table td:nth-child(6) {
+  width: 160px;
+}
+
+.task-table td {
+  height: auto;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.task-note-cell {
+  min-width: 0;
+}
+
+.task-note-cell strong,
+.task-note-cell span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-note-cell span {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.task-card-list {
+  display: none;
 }
 
 .source-summary-grid {
@@ -1520,6 +1626,15 @@ progress {
   .source-pagination {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .task-table-wrap {
+    display: none;
+  }
+
+  .task-card-list {
+    display: grid;
+    gap: 10px;
   }
 
   .pagination-links {

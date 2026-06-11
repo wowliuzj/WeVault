@@ -5,6 +5,7 @@ import {
   apiRequest,
   getAuthHeaders,
   getSourceAvatarUrl,
+  type CollectionTask,
   type SourceSearchItem,
   type SourceSearchResponse,
   type TokenResponse,
@@ -18,7 +19,7 @@ type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports
 type AuthMode = "login" | "register";
 type ToastKind = "success" | "error";
 type SourceViewMode = "list" | "grid";
-type SourceModalMode = "search" | "url" | null;
+type SourceModalMode = "search" | "url" | "task" | null;
 
 const views: Array<{ id: ViewId; label: string; icon: string; title: string; subtitle: string }> = [
   {
@@ -105,12 +106,6 @@ const recentArticles = [
   },
 ];
 
-const tasks = [
-  { type: "fetch_article_content", note: "技术观察站 · 12/40 · running", progress: 30 },
-  { type: "fetch_source_articles", note: "产品笔记 · 120/120 · succeeded", progress: 100 },
-  { type: "fetch_article_comments", note: "SaaS 方法论 · waiting", progress: 0 },
-];
-
 const exports = [
   { name: "产品笔记精选 24 篇", note: "PDF · 保留文本 · 28.4 MB" },
   { name: "企业知识库专题", note: "DOCX · 16 篇文章 · 12.1 MB" },
@@ -156,6 +151,19 @@ const sourcePage = ref(1);
 const sourcePageSize = ref(10);
 const sourceOperatingId = ref("");
 const brokenSourceAvatars = ref<Set<string>>(new Set());
+const selectedTaskSource = ref<WechatSource | null>(null);
+const taskLoading = ref(false);
+const taskSubmitting = ref(false);
+const tasks = ref<CollectionTask[]>([]);
+const taskPage = ref(1);
+const taskPageSize = ref(10);
+const taskForm = ref({
+  range: "7d",
+  limit: 50,
+  fetchContent: false,
+  fetchComments: false,
+  skipExisting: true,
+});
 let wechatLoginTimer: number | undefined;
 let toastTimer: number | undefined;
 
@@ -199,6 +207,14 @@ const paginatedSources = computed(() => {
   const start = (page - 1) * sourcePageSize.value;
   return sources.value.slice(start, start + sourcePageSize.value);
 });
+const taskPageCount = computed(() =>
+  Math.max(1, Math.ceil(tasks.value.length / taskPageSize.value)),
+);
+const paginatedTasks = computed(() => {
+  const page = Math.min(taskPage.value, taskPageCount.value);
+  const start = (page - 1) * taskPageSize.value;
+  return tasks.value.slice(start, start + taskPageSize.value);
+});
 
 function setSession(response: TokenResponse) {
   token.value = response.access_token;
@@ -221,6 +237,7 @@ async function loadCurrentUser() {
     });
     await loadWechatAccount();
     await loadSources();
+    await loadTasks();
   } catch {
     logout();
   }
@@ -272,6 +289,9 @@ function setView(viewId: ViewId) {
   if (viewId === "sources") {
     void loadSources();
   }
+  if (viewId === "tasks") {
+    void loadTasks();
+  }
 }
 
 function toggleSidebar() {
@@ -315,6 +335,7 @@ function openSourceModal(mode: Exclude<SourceModalMode, null>) {
 
 function closeSourceModal() {
   sourceModalMode.value = null;
+  selectedTaskSource.value = null;
 }
 
 async function submitSourceSearch() {
@@ -433,6 +454,65 @@ function setSourcePageSize(event: Event) {
   sourcePage.value = 1;
 }
 
+function setTaskPage(page: number) {
+  taskPage.value = Math.min(Math.max(page, 1), taskPageCount.value);
+}
+
+function setTaskPageSize(event: Event) {
+  const target = event.target as HTMLSelectElement;
+  taskPageSize.value = Number(target.value);
+  taskPage.value = 1;
+}
+
+function openTaskModal(source: WechatSource) {
+  selectedTaskSource.value = source;
+  taskForm.value = {
+    range: "7d",
+    limit: 50,
+    fetchContent: false,
+    fetchComments: false,
+    skipExisting: true,
+  };
+  sourceModalMode.value = "task";
+}
+
+function toggleTaskFetchContent(value: boolean) {
+  taskForm.value.fetchContent = value;
+  if (!value) {
+    taskForm.value.fetchComments = false;
+  }
+}
+
+async function createSourceArticleTask() {
+  if (!selectedTaskSource.value) {
+    return;
+  }
+
+  taskSubmitting.value = true;
+  try {
+    await apiRequest<CollectionTask>("/tasks/source-articles", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        source_id: selectedTaskSource.value.id,
+        range: taskForm.value.range,
+        limit: taskForm.value.limit,
+        fetch_content: taskForm.value.fetchContent,
+        fetch_comments: taskForm.value.fetchComments,
+        skip_existing: taskForm.value.skipExisting,
+      }),
+    });
+    showToast("success", "采集任务已创建");
+    closeSourceModal();
+    activeView.value = "tasks";
+    await loadTasks();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "创建采集任务失败");
+  } finally {
+    taskSubmitting.value = false;
+  }
+}
+
 async function refreshSource(source: WechatSource) {
   sourceOperatingId.value = source.id;
   try {
@@ -492,8 +572,35 @@ async function deleteSource(source: WechatSource) {
   }
 }
 
-function showFetchPlaceholder(source: WechatSource) {
-  showToast("success", `「${source.name}」的抓取任务稍后接入`);
+function taskStatusLabel(status: CollectionTask["status"]) {
+  const labels: Record<CollectionTask["status"], string> = {
+    pending: "待执行",
+    running: "执行中",
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  return labels[status];
+}
+
+function taskStatusTag(status: CollectionTask["status"]) {
+  if (status === "succeeded") {
+    return "success";
+  }
+  if (status === "running") {
+    return "progress";
+  }
+  if (status === "failed") {
+    return "warning";
+  }
+  return "muted";
+}
+
+function taskProgress(task: CollectionTask) {
+  if (task.progress_total <= 0) {
+    return 0;
+  }
+  return Math.round((task.progress_current / task.progress_total) * 100);
 }
 
 async function logout() {
@@ -665,6 +772,27 @@ async function loadSources() {
     showToast("error", sourceError.value);
   } finally {
     sourceLoading.value = false;
+  }
+}
+
+async function loadTasks() {
+  if (!token.value) {
+    tasks.value = [];
+    return;
+  }
+
+  taskLoading.value = true;
+  try {
+    tasks.value = await apiRequest<CollectionTask[]>("/tasks", {
+      headers: authHeaders(),
+    });
+    if (taskPage.value > taskPageCount.value) {
+      taskPage.value = taskPageCount.value;
+    }
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "读取采集任务失败");
+  } finally {
+    taskLoading.value = false;
   }
 }
 
@@ -1147,7 +1275,7 @@ onBeforeUnmount(() => {
                       >
                         刷新
                       </button>
-                      <button class="link-button" type="button" @click="showFetchPlaceholder(source)">
+                      <button class="link-button" type="button" @click="openTaskModal(source)">
                         抓取
                       </button>
                       <button
@@ -1217,7 +1345,7 @@ onBeforeUnmount(() => {
                 >
                   刷新
                 </button>
-                <button class="link-button" type="button" @click="showFetchPlaceholder(source)">
+                <button class="link-button" type="button" @click="openTaskModal(source)">
                   抓取
                 </button>
                 <button
@@ -1341,16 +1469,102 @@ onBeforeUnmount(() => {
               <h2>采集任务</h2>
               <p>用于观察列表同步、正文抓取、评论抓取和导出进度。</p>
             </div>
+            <button class="ghost-button" type="button" :disabled="taskLoading" @click="loadTasks">
+              {{ taskLoading ? "刷新中..." : "刷新" }}
+            </button>
           </div>
-          <div class="task-list">
-            <article v-for="task in tasks" :key="task.type" class="task-row">
-              <div>
-                <strong>{{ task.type }}</strong>
-                <span>{{ task.note }}</span>
+          <div v-if="taskLoading" class="empty-state">正在读取采集任务</div>
+          <div v-else-if="tasks.length === 0" class="empty-state">还没有采集任务</div>
+          <template v-else>
+            <div class="task-table-wrap">
+              <table class="task-table">
+                <thead>
+                  <tr>
+                    <th>任务类型</th>
+                    <th>任务参数</th>
+                    <th>状态</th>
+                    <th>进度</th>
+                    <th>创建时间</th>
+                    <th>错误</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="task in paginatedTasks" :key="task.id">
+                    <td>{{ task.task_type }}</td>
+                    <td>
+                      <div class="task-note-cell">
+                        <strong>{{ task.note }}</strong>
+                        <span>{{ task.id }}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="tag" :class="taskStatusTag(task.status)">
+                        {{ taskStatusLabel(task.status) }}
+                      </span>
+                    </td>
+                    <td><progress :value="taskProgress(task)" max="100"></progress></td>
+                    <td>{{ formatDateTime(task.created_at) }}</td>
+                    <td>{{ task.error_message || "-" }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="task-card-list">
+              <article v-for="task in paginatedTasks" :key="task.id" class="task-row">
+                <div>
+                  <strong>{{ task.task_type }}</strong>
+                  <span>{{ task.note }}</span>
+                  <span>创建时间：{{ formatDateTime(task.created_at) }}</span>
+                </div>
+                <div class="task-status-cell">
+                  <span class="tag" :class="taskStatusTag(task.status)">
+                    {{ taskStatusLabel(task.status) }}
+                  </span>
+                  <progress :value="taskProgress(task)" max="100"></progress>
+                </div>
+              </article>
+            </div>
+
+            <div class="source-pagination">
+              <label>
+                <span>每页</span>
+                <select :value="taskPageSize" @change="setTaskPageSize">
+                  <option :value="10">10</option>
+                  <option :value="20">20</option>
+                  <option :value="50">50</option>
+                </select>
+              </label>
+              <div class="pagination-links">
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="taskPage <= 1"
+                  @click="setTaskPage(taskPage - 1)"
+                >
+                  上一页
+                </button>
+                <button
+                  v-for="page in taskPageCount"
+                  :key="page"
+                  class="page-button"
+                  :class="{ active: page === taskPage }"
+                  type="button"
+                  @click="setTaskPage(page)"
+                >
+                  {{ page }}
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="taskPage >= taskPageCount"
+                  @click="setTaskPage(taskPage + 1)"
+                >
+                  下一页
+                </button>
               </div>
-              <progress :value="task.progress" max="100"></progress>
-            </article>
-          </div>
+            </div>
+          </template>
         </section>
       </section>
 
@@ -1450,7 +1664,13 @@ onBeforeUnmount(() => {
         class="modal-dialog source-modal"
         role="dialog"
         aria-modal="true"
-        :aria-labelledby="sourceModalMode === 'search' ? 'source-search-title' : 'source-url-title'"
+        :aria-labelledby="
+          sourceModalMode === 'search'
+            ? 'source-search-title'
+            : sourceModalMode === 'task'
+              ? 'source-task-title'
+              : 'source-url-title'
+        "
       >
         <button class="modal-close" type="button" aria-label="关闭" @click="closeSourceModal">
           ×
@@ -1515,6 +1735,65 @@ onBeforeUnmount(() => {
               未找到匹配的公众号
             </div>
           </div>
+        </template>
+
+        <template v-else-if="sourceModalMode === 'task'">
+          <div class="modal-header">
+            <div>
+              <h2 id="source-task-title">创建采集任务</h2>
+              <p>{{ selectedTaskSource?.name }} · 当前仅创建任务，执行和停止稍后接入。</p>
+            </div>
+          </div>
+          <form class="modal-form" @submit.prevent="createSourceArticleTask">
+            <label>
+              <span>时间范围</span>
+              <select v-model="taskForm.range">
+                <option value="7d">最近 7 天</option>
+                <option value="30d">最近 30 天</option>
+                <option value="90d">最近 90 天</option>
+                <option value="all">全部</option>
+              </select>
+            </label>
+            <label>
+              <span>最多文章数</span>
+              <select v-model.number="taskForm.limit">
+                <option :value="30">30</option>
+                <option :value="50">50</option>
+                <option :value="100">100</option>
+                <option :value="0">不设限</option>
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <span>采集正文</span>
+              <input
+                type="checkbox"
+                :checked="taskForm.fetchContent"
+                @change="toggleTaskFetchContent(($event.target as HTMLInputElement).checked)"
+              />
+            </label>
+            <label class="checkbox-row">
+              <span>采集评论</span>
+              <input
+                v-model="taskForm.fetchComments"
+                type="checkbox"
+                :disabled="!taskForm.fetchContent"
+              />
+            </label>
+            <label class="checkbox-row">
+              <span>跳过已存在文章</span>
+              <input v-model="taskForm.skipExisting" type="checkbox" />
+            </label>
+            <div class="readonly-row">
+              <span>执行方式</span>
+              <strong>立即执行</strong>
+            </div>
+            <div class="modal-actions">
+              <button class="ghost-button" type="button" @click="closeSourceModal">取消</button>
+              <button class="primary-button" type="submit" :disabled="taskSubmitting">
+                {{ taskSubmitting ? "创建中..." : "创建任务" }}
+              </button>
+            </div>
+          </form>
         </template>
 
         <template v-else>
