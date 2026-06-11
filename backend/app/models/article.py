@@ -12,6 +12,10 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.enums import FetchStatus
 
 
+def enum_values(enum_cls: type) -> list[str]:
+    return [item.value for item in enum_cls]
+
+
 class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "articles"
     __table_args__ = (
@@ -42,11 +46,11 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     appmsgid: Mapped[str | None] = mapped_column(String(120), index=True)
     itemidx: Mapped[int | None] = mapped_column()
     content_status: Mapped[FetchStatus] = mapped_column(
-        Enum(FetchStatus, name="article_content_status"),
+        Enum(FetchStatus, name="article_content_status", values_callable=enum_values),
         default=FetchStatus.PENDING,
     )
     comment_status: Mapped[FetchStatus] = mapped_column(
-        Enum(FetchStatus, name="article_comment_status"),
+        Enum(FetchStatus, name="article_comment_status", values_callable=enum_values),
         default=FetchStatus.PENDING,
     )
     raw_data: Mapped[dict | None] = mapped_column(JSONB)

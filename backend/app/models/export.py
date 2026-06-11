@@ -12,14 +12,20 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.enums import ExportFormat, TaskStatus
 
 
+def enum_values(enum_cls: type) -> list[str]:
+    return [item.value for item in enum_cls]
+
+
 class ExportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "export_jobs"
 
     user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(180))
-    format: Mapped[ExportFormat] = mapped_column(Enum(ExportFormat, name="export_format"))
+    format: Mapped[ExportFormat] = mapped_column(
+        Enum(ExportFormat, name="export_format", values_callable=enum_values),
+    )
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus, name="export_status"),
+        Enum(TaskStatus, name="export_status", values_callable=enum_values),
         default=TaskStatus.PENDING,
         index=True,
     )

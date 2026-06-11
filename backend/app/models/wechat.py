@@ -74,13 +74,15 @@ class WechatSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fakeid: Mapped[str | None] = mapped_column(String(160), index=True)
     biz: Mapped[str | None] = mapped_column(String(160), index=True)
     avatar_url: Mapped[str | None] = mapped_column(Text)
+    avatar_storage_path: Mapped[str | None] = mapped_column(Text)
+    avatar_content_type: Mapped[str | None] = mapped_column(String(120))
     description: Mapped[str | None] = mapped_column(Text)
     source_from: Mapped[SourceFrom] = mapped_column(
-        Enum(SourceFrom, name="source_from"),
+        Enum(SourceFrom, name="source_from", values_callable=enum_values),
         default=SourceFrom.SEARCH,
     )
     status: Mapped[SourceStatus] = mapped_column(
-        Enum(SourceStatus, name="source_status"),
+        Enum(SourceStatus, name="source_status", values_callable=enum_values),
         default=SourceStatus.ACTIVE,
     )
     auto_fetch_content: Mapped[bool] = mapped_column(Boolean, default=False)

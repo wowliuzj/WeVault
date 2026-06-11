@@ -33,6 +33,41 @@ export type WechatLoginSession = {
   message: string | null;
 };
 
+export type WechatSource = {
+  id: string;
+  name: string;
+  alias: string | null;
+  fakeid: string | null;
+  biz: string | null;
+  avatar_url: string | null;
+  avatar_asset_url: string | null;
+  description: string | null;
+  source_from: "search" | "article_url" | "manual";
+  status: "active" | "paused" | "failed";
+  auto_fetch_content: boolean;
+  auto_fetch_comments: boolean;
+  last_article_at: string | null;
+  last_list_fetched_at: string | null;
+  last_content_fetched_at: string | null;
+  article_count: number;
+};
+
+export type SourceSearchItem = {
+  name: string;
+  alias: string | null;
+  fakeid: string | null;
+  biz: string | null;
+  avatar_url: string | null;
+  description: string | null;
+  raw_data: Record<string, unknown> | null;
+  already_added: boolean;
+};
+
+export type SourceSearchResponse = {
+  keyword: string;
+  items: SourceSearchItem[];
+};
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
@@ -55,4 +90,22 @@ export function getAuthHeaders(token: string): HeadersInit {
   return {
     Authorization: `Bearer ${token}`,
   };
+}
+
+function getApiUrl(path: string): string {
+  const baseUrl = new URL(API_BASE_URL);
+  return `${baseUrl.origin}${path}`;
+}
+
+export function getSourceAvatarUrl(
+  source: { avatar_asset_url?: string | null; avatar_url: string | null },
+): string {
+  if (source.avatar_asset_url) {
+    return getApiUrl(source.avatar_asset_url);
+  }
+  const url = source.avatar_url;
+  if (!url) {
+    return "";
+  }
+  return `${API_BASE_URL}/sources/avatar?url=${encodeURIComponent(url)}`;
 }

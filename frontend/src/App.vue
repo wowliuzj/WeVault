@@ -4,15 +4,21 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   apiRequest,
   getAuthHeaders,
+  getSourceAvatarUrl,
+  type SourceSearchItem,
+  type SourceSearchResponse,
   type TokenResponse,
   type User,
   type WechatAccount,
   type WechatLoginSession,
+  type WechatSource,
 } from "./api";
 
 type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "settings";
 type AuthMode = "login" | "register";
 type ToastKind = "success" | "error";
+type SourceViewMode = "list" | "grid";
+type SourceModalMode = "search" | "url" | null;
 
 const views: Array<{ id: ViewId; label: string; icon: string; title: string; subtitle: string }> = [
   {
@@ -99,12 +105,6 @@ const recentArticles = [
   },
 ];
 
-const sources = [
-  { name: "产品笔记", note: "18,642 篇文章 · 自动正文开启 · 自动评论关闭" },
-  { name: "技术观察站", note: "7,104 篇文章 · 自动正文关闭 · 自动评论关闭" },
-  { name: "SaaS 方法论", note: "3,912 篇文章 · 自动正文开启 · 自动评论开启" },
-];
-
 const tasks = [
   { type: "fetch_article_content", note: "技术观察站 · 12/40 · running", progress: 30 },
   { type: "fetch_source_articles", note: "产品笔记 · 120/120 · succeeded", progress: 100 },
@@ -139,6 +139,23 @@ const wechatLoginError = ref("");
 const wechatRefreshError = ref("");
 const wechatLoginSession = ref<WechatLoginSession | null>(null);
 const toast = ref<{ kind: ToastKind; message: string } | null>(null);
+const sourceViewMode = ref<SourceViewMode>("list");
+const sourceModalMode = ref<SourceModalMode>(null);
+const sourceSearchKeyword = ref("");
+const sourceArticleUrl = ref("");
+const sourceSearchLoading = ref(false);
+const sourceUrlLoading = ref(false);
+const sourceAddLoading = ref(false);
+const sourceLoading = ref(false);
+const sourceError = ref("");
+const sources = ref<WechatSource[]>([]);
+const sourceSearchResults = ref<SourceSearchItem[]>([]);
+const sourceSearchSubmitted = ref(false);
+const sourceUrlSubmitted = ref(false);
+const sourcePage = ref(1);
+const sourcePageSize = ref(10);
+const sourceOperatingId = ref("");
+const brokenSourceAvatars = ref<Set<string>>(new Set());
 let wechatLoginTimer: number | undefined;
 let toastTimer: number | undefined;
 
@@ -164,6 +181,24 @@ const wechatStatusNote = computed(() => {
   return `当前公众号：${wechatAccount.value.nickname}`;
 });
 const wechatExpiresLabel = computed(() => formatDateTime(wechatAccount.value?.expires_at));
+const sourceModalVisible = computed(() => sourceModalMode.value !== null);
+const hasValidWechatAuthorization = computed(
+  () => Boolean(wechatAccount.value) && wechatAccount.value?.token_status === "valid",
+);
+const sourceTotalArticles = computed(() =>
+  sources.value.reduce((total, source) => total + source.article_count, 0),
+);
+const activeSourceCount = computed(
+  () => sources.value.filter((source) => source.status === "active").length,
+);
+const sourcePageCount = computed(() =>
+  Math.max(1, Math.ceil(sources.value.length / sourcePageSize.value)),
+);
+const paginatedSources = computed(() => {
+  const page = Math.min(sourcePage.value, sourcePageCount.value);
+  const start = (page - 1) * sourcePageSize.value;
+  return sources.value.slice(start, start + sourcePageSize.value);
+});
 
 function setSession(response: TokenResponse) {
   token.value = response.access_token;
@@ -185,6 +220,7 @@ async function loadCurrentUser() {
       headers: getAuthHeaders(token.value),
     });
     await loadWechatAccount();
+    await loadSources();
   } catch {
     logout();
   }
@@ -233,6 +269,9 @@ function setView(viewId: ViewId) {
   if (viewId === "auth") {
     void loadWechatAccount();
   }
+  if (viewId === "sources") {
+    void loadSources();
+  }
 }
 
 function toggleSidebar() {
@@ -263,11 +302,206 @@ function showToast(kind: ToastKind, message: string) {
   }, 2800);
 }
 
+function openSourceModal(mode: Exclude<SourceModalMode, null>) {
+  if (!hasValidWechatAuthorization.value) {
+    showToast("error", "请先完成有效的微信公众号扫码授权");
+    return;
+  }
+  sourceModalMode.value = mode;
+  sourceSearchSubmitted.value = false;
+  sourceUrlSubmitted.value = false;
+  sourceSearchResults.value = [];
+}
+
+function closeSourceModal() {
+  sourceModalMode.value = null;
+}
+
+async function submitSourceSearch() {
+  if (!sourceSearchKeyword.value.trim()) {
+    return;
+  }
+  sourceSearchLoading.value = true;
+  sourceSearchSubmitted.value = false;
+  sourceSearchResults.value = [];
+  try {
+    const response = await apiRequest<SourceSearchResponse>("/sources/search", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ keyword: sourceSearchKeyword.value.trim(), count: 10 }),
+    });
+    sourceSearchResults.value = response.items;
+    sourceSearchSubmitted.value = true;
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "搜索公众号失败");
+  } finally {
+    sourceSearchLoading.value = false;
+  }
+}
+
+async function submitSourceUrl() {
+  if (!sourceArticleUrl.value.trim()) {
+    return;
+  }
+  sourceUrlLoading.value = true;
+  sourceUrlSubmitted.value = false;
+  try {
+    await apiRequest<WechatSource>("/sources/from-article-url", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ article_url: sourceArticleUrl.value.trim() }),
+    });
+    sourceUrlSubmitted.value = true;
+    showToast("success", "已添加公众号源");
+    closeSourceModal();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "解析文章链接失败");
+  } finally {
+    sourceUrlLoading.value = false;
+  }
+}
+
+async function addSourceFromModal(source: SourceSearchItem) {
+  if (!source.fakeid || source.already_added) {
+    return;
+  }
+  sourceAddLoading.value = true;
+  try {
+    await apiRequest<WechatSource>("/sources", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(source),
+    });
+    showToast("success", `已添加 ${source.name}`);
+    closeSourceModal();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "添加公众号源失败");
+  } finally {
+    sourceAddLoading.value = false;
+  }
+}
+
+function sourceInitial(name: string) {
+  return name.slice(0, 1);
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function sourceStatusLabel(status: WechatSource["status"]) {
+  if (status === "active") {
+    return "正常";
+  }
+  return "暂停";
+}
+
+function sourceStatusTag(status: WechatSource["status"]) {
+  if (status === "active") {
+    return "success";
+  }
+  return "muted";
+}
+
+function sourceDescription(source: WechatSource | SourceSearchItem) {
+  return source.description || source.alias || "暂无描述";
+}
+
+function sourceAvatarSrc(source: WechatSource | SourceSearchItem) {
+  return getSourceAvatarUrl(source);
+}
+
+function isSourceAvatarBroken(source: WechatSource | SourceSearchItem) {
+  return Boolean(source.avatar_url && brokenSourceAvatars.value.has(source.avatar_url));
+}
+
+function markBrokenSourceAvatar(source: WechatSource | SourceSearchItem) {
+  if (source.avatar_url) {
+    brokenSourceAvatars.value = new Set([...brokenSourceAvatars.value, source.avatar_url]);
+  }
+}
+
+function setSourcePage(page: number) {
+  sourcePage.value = Math.min(Math.max(page, 1), sourcePageCount.value);
+}
+
+function setSourcePageSize(event: Event) {
+  const target = event.target as HTMLSelectElement;
+  sourcePageSize.value = Number(target.value);
+  sourcePage.value = 1;
+}
+
+async function refreshSource(source: WechatSource) {
+  sourceOperatingId.value = source.id;
+  try {
+    await apiRequest<WechatSource>(`/sources/${source.id}/refresh`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    showToast("success", `已刷新 ${source.name}`);
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "刷新公众号信息失败");
+  } finally {
+    sourceOperatingId.value = "";
+  }
+}
+
+async function toggleSourceStatus(source: WechatSource) {
+  sourceOperatingId.value = source.id;
+  const nextStatus = source.status === "active" ? "paused" : "active";
+  try {
+    const updatedSource = await apiRequest<WechatSource>(
+      `/sources/${source.id}/${nextStatus === "active" ? "resume" : "pause"}`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+      },
+    );
+    sources.value = sources.value.map((item) =>
+      item.id === updatedSource.id ? updatedSource : item,
+    );
+    showToast("success", nextStatus === "active" ? "已启用自动抓取" : "已停用自动抓取");
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "更新公众号源状态失败");
+  } finally {
+    sourceOperatingId.value = "";
+  }
+}
+
+async function deleteSource(source: WechatSource) {
+  const confirmed = window.confirm(`删除「${source.name}」及所有在库文章？`);
+  if (!confirmed) {
+    return;
+  }
+
+  sourceOperatingId.value = source.id;
+  try {
+    await apiRequest(`/sources/${source.id}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    showToast("success", `已删除 ${source.name}`);
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "删除公众号源失败");
+  } finally {
+    sourceOperatingId.value = "";
+  }
+}
+
+function showFetchPlaceholder(source: WechatSource) {
+  showToast("success", `「${source.name}」的抓取任务稍后接入`);
+}
+
 async function logout() {
   const activeToken = token.value;
   token.value = "";
   currentUser.value = null;
   wechatAccount.value = null;
+  sources.value = [];
   closeWechatLogin();
   userMenuOpen.value = false;
   localStorage.removeItem("wevault_token");
@@ -290,6 +524,9 @@ async function loadWechatAccount() {
     wechatAccount.value = await apiRequest<WechatAccount | null>("/wechat/accounts/current", {
       headers: authHeaders(),
     });
+    if (!hasValidWechatAuthorization.value && sourceModalVisible.value) {
+      closeSourceModal();
+    }
   } finally {
     wechatLoading.value = false;
   }
@@ -309,6 +546,7 @@ async function refreshWechatAccount() {
     });
     wechatRefreshError.value = "";
     showToast("success", "授权刷新成功");
+    await loadSources();
   } catch (error) {
     wechatRefreshError.value = error instanceof Error ? error.message : "刷新授权失败";
     showToast("error", wechatRefreshError.value);
@@ -340,6 +578,7 @@ async function pollWechatLoginStatus(loginId: string) {
       stopWechatLoginPolling();
       if (session.status === "confirmed") {
         await loadWechatAccount();
+        await loadSources();
         closeWechatLogin();
       }
     }
@@ -404,6 +643,29 @@ async function logoutWechatAccount() {
     headers: authHeaders(),
   });
   await loadWechatAccount();
+}
+
+async function loadSources() {
+  if (!token.value) {
+    sources.value = [];
+    return;
+  }
+
+  sourceLoading.value = true;
+  sourceError.value = "";
+  try {
+    sources.value = await apiRequest<WechatSource[]>("/sources", {
+      headers: authHeaders(),
+    });
+    if (sourcePage.value > sourcePageCount.value) {
+      sourcePage.value = sourcePageCount.value;
+    }
+  } catch (error) {
+    sourceError.value = error instanceof Error ? error.message : "读取公众号源失败";
+    showToast("error", sourceError.value);
+  } finally {
+    sourceLoading.value = false;
+  }
 }
 
 onMounted(() => {
@@ -559,7 +821,18 @@ onBeforeUnmount(() => {
         </div>
         <div class="topbar-actions">
           <button class="ghost-button" type="button">搜索</button>
-          <button class="primary-button" type="button">添加公众号源</button>
+          <button
+            class="primary-button"
+            type="button"
+            :disabled="!hasValidWechatAuthorization"
+            :title="hasValidWechatAuthorization ? '添加公众号源' : '请先扫码授权微信公众号'"
+            @click="
+              activeView = 'sources';
+              openSourceModal('search');
+            "
+          >
+            添加公众号源
+          </button>
         </div>
       </header>
 
@@ -596,8 +869,8 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric">
             <div class="metric-label">公众号源</div>
-            <div class="metric-value">18</div>
-            <div class="metric-note">3 个开启自动抓取</div>
+            <div class="metric-value">{{ sources.length }}</div>
+            <div class="metric-note">{{ activeSourceCount }} 个状态正常</div>
           </article>
           <article class="metric">
             <div class="metric-label">文章库</div>
@@ -760,21 +1033,249 @@ onBeforeUnmount(() => {
           <div class="panel-header">
             <div>
               <h2>公众号源</h2>
-              <p>通过名称搜索或文章链接添加，添加后先同步文章列表。</p>
+              <p>只管理公众号源本身，文章同步和正文抓取在后续流程处理。</p>
             </div>
             <div class="inline-actions">
-              <button class="ghost-button" type="button">粘贴文章链接</button>
-              <button class="primary-button" type="button">搜索公众号</button>
+              <div class="segmented-control" aria-label="公众号源视图">
+                <button
+                  type="button"
+                  :class="{ active: sourceViewMode === 'list' }"
+                  @click="sourceViewMode = 'list'"
+                >
+                  列表
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: sourceViewMode === 'grid' }"
+                  @click="sourceViewMode = 'grid'"
+                >
+                  网格
+                </button>
+              </div>
+              <button
+                class="ghost-button"
+                type="button"
+                :disabled="!hasValidWechatAuthorization"
+                :title="hasValidWechatAuthorization ? '通过文章链接添加' : '请先扫码授权微信公众号'"
+                @click="openSourceModal('url')"
+              >
+                粘贴文章链接
+              </button>
+              <button
+                class="primary-button"
+                type="button"
+                :disabled="!hasValidWechatAuthorization"
+                :title="hasValidWechatAuthorization ? '搜索公众号' : '请先扫码授权微信公众号'"
+                @click="openSourceModal('search')"
+              >
+                搜索公众号
+              </button>
             </div>
           </div>
-          <div class="source-list">
-            <article v-for="source in sources" :key="source.name" class="source-row">
-              <div>
-                <strong>{{ source.name }}</strong>
-                <span>{{ source.note }}</span>
-              </div>
-              <button class="small-button" type="button">同步列表</button>
+
+          <div v-if="!hasValidWechatAuthorization" class="source-auth-notice">
+            <span>添加公众号源需要先完成微信公众号扫码授权。</span>
+            <button class="small-button" type="button" @click="startWechatLogin">扫码授权</button>
+          </div>
+          <p v-if="sourceError" class="auth-error">{{ sourceError }}</p>
+
+          <div class="source-summary-grid">
+            <article class="source-summary-item">
+              <strong>{{ sources.length }}</strong>
+              <span>已关注公众号</span>
             </article>
+            <article class="source-summary-item">
+              <strong>{{ formatNumber(sourceTotalArticles) }}</strong>
+              <span>在库文章</span>
+            </article>
+            <article class="source-summary-item">
+              <strong>{{ activeSourceCount }}</strong>
+              <span>状态正常</span>
+            </article>
+          </div>
+
+          <div v-if="sourceLoading" class="empty-state">正在读取公众号源</div>
+          <div v-else-if="sources.length === 0" class="empty-state">
+            还没有公众号源
+          </div>
+          <div v-else-if="sourceViewMode === 'list'" class="source-table-wrap">
+            <table class="source-table">
+              <thead>
+                <tr>
+                  <th>Logo</th>
+                  <th>公众号</th>
+                  <th>最后抓取</th>
+                  <th>在库文章</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="source in paginatedSources" :key="source.id">
+                  <td>
+                    <img
+                      v-if="source.avatar_url && !isSourceAvatarBroken(source)"
+                      :src="sourceAvatarSrc(source)"
+                      alt=""
+                      class="source-avatar"
+                      @error="markBrokenSourceAvatar(source)"
+                    />
+                    <span v-else class="source-avatar fallback">
+                      {{ sourceInitial(source.name) }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="source-name-cell">
+                      <strong>{{ source.name }}</strong>
+                      <span>{{ sourceDescription(source) }}</span>
+                    </div>
+                  </td>
+                  <td>{{ formatDateTime(source.last_list_fetched_at) }}</td>
+                  <td>{{ formatNumber(source.article_count) }}</td>
+                  <td>
+                    <span class="tag" :class="sourceStatusTag(source.status)">
+                      {{ sourceStatusLabel(source.status) }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="source-actions">
+                      <button
+                        class="link-button"
+                        type="button"
+                        :disabled="sourceOperatingId === source.id"
+                        @click="refreshSource(source)"
+                      >
+                        刷新
+                      </button>
+                      <button class="link-button" type="button" @click="showFetchPlaceholder(source)">
+                        抓取
+                      </button>
+                      <button
+                        class="link-button"
+                        type="button"
+                        :disabled="sourceOperatingId === source.id"
+                        @click="toggleSourceStatus(source)"
+                      >
+                        {{ source.status === "active" ? "停用" : "启用" }}
+                      </button>
+                      <button
+                        class="link-button danger"
+                        type="button"
+                        :disabled="sourceOperatingId === source.id"
+                        @click="deleteSource(source)"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="source-list source-grid">
+            <article v-for="source in paginatedSources" :key="source.id" class="source-row">
+              <div class="source-main">
+                <img
+                  v-if="source.avatar_url && !isSourceAvatarBroken(source)"
+                  :src="sourceAvatarSrc(source)"
+                  alt=""
+                  class="source-avatar"
+                  @error="markBrokenSourceAvatar(source)"
+                />
+                <span v-else class="source-avatar fallback">
+                  {{ sourceInitial(source.name) }}
+                </span>
+                <div>
+                  <strong>{{ source.name }}</strong>
+                  <span>{{ sourceDescription(source) }}</span>
+                </div>
+              </div>
+              <dl class="source-meta">
+                <div>
+                  <dt>最后抓取</dt>
+                  <dd>{{ formatDateTime(source.last_list_fetched_at) }}</dd>
+                </div>
+                <div>
+                  <dt>在库文章</dt>
+                  <dd>{{ formatNumber(source.article_count) }}</dd>
+                </div>
+                <div>
+                  <dt>状态</dt>
+                  <dd>
+                    <span class="tag" :class="sourceStatusTag(source.status)">
+                      {{ sourceStatusLabel(source.status) }}
+                    </span>
+                  </dd>
+                </div>
+              </dl>
+              <div class="source-actions">
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="sourceOperatingId === source.id"
+                  @click="refreshSource(source)"
+                >
+                  刷新
+                </button>
+                <button class="link-button" type="button" @click="showFetchPlaceholder(source)">
+                  抓取
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="sourceOperatingId === source.id"
+                  @click="toggleSourceStatus(source)"
+                >
+                  {{ source.status === "active" ? "停用" : "启用" }}
+                </button>
+                <button
+                  class="link-button danger"
+                  type="button"
+                  :disabled="sourceOperatingId === source.id"
+                  @click="deleteSource(source)"
+                >
+                  删除
+                </button>
+              </div>
+            </article>
+          </div>
+          <div v-if="sources.length > 0" class="source-pagination">
+            <label>
+              <span>每页</span>
+              <select :value="sourcePageSize" @change="setSourcePageSize">
+                <option :value="10">10</option>
+                <option :value="20">20</option>
+                <option :value="50">50</option>
+              </select>
+            </label>
+            <div class="pagination-links">
+              <button
+                class="link-button"
+                type="button"
+                :disabled="sourcePage <= 1"
+                @click="setSourcePage(sourcePage - 1)"
+              >
+                上一页
+              </button>
+              <button
+                v-for="page in sourcePageCount"
+                :key="page"
+                class="page-button"
+                :class="{ active: page === sourcePage }"
+                type="button"
+                @click="setSourcePage(page)"
+              >
+                {{ page }}
+              </button>
+              <button
+                class="link-button"
+                type="button"
+                :disabled="sourcePage >= sourcePageCount"
+                @click="setSourcePage(sourcePage + 1)"
+              >
+                下一页
+              </button>
+            </div>
           </div>
         </section>
       </section>
@@ -941,6 +1442,113 @@ onBeforeUnmount(() => {
             </a>
           </div>
         </div>
+      </section>
+    </div>
+
+    <div v-if="sourceModalVisible" class="modal-backdrop">
+      <section
+        class="modal-dialog source-modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-labelledby="sourceModalMode === 'search' ? 'source-search-title' : 'source-url-title'"
+      >
+        <button class="modal-close" type="button" aria-label="关闭" @click="closeSourceModal">
+          ×
+        </button>
+
+        <template v-if="sourceModalMode === 'search'">
+          <div class="modal-header">
+            <div>
+              <h2 id="source-search-title">搜索公众号</h2>
+              <p>通过公众号名称搜索并添加到源列表。</p>
+            </div>
+          </div>
+          <form class="modal-form" @submit.prevent="submitSourceSearch">
+            <label>
+              <span>公众号名称</span>
+              <input v-model="sourceSearchKeyword" type="search" placeholder="输入公众号名称" />
+            </label>
+            <div class="modal-actions">
+              <button class="ghost-button" type="button" @click="closeSourceModal">取消</button>
+              <button
+                class="primary-button"
+                type="submit"
+                :disabled="sourceSearchLoading || !sourceSearchKeyword.trim()"
+              >
+                {{ sourceSearchLoading ? "搜索中..." : "搜索" }}
+              </button>
+            </div>
+          </form>
+
+          <div v-if="sourceSearchSubmitted" class="modal-result-list">
+            <article
+              v-for="source in sourceSearchResults"
+              :key="source.fakeid || source.name"
+              class="modal-result-item source-search-result"
+            >
+              <div class="source-main">
+                <img
+                  v-if="source.avatar_url && !isSourceAvatarBroken(source)"
+                  :src="sourceAvatarSrc(source)"
+                  alt=""
+                  class="source-avatar"
+                  @error="markBrokenSourceAvatar(source)"
+                />
+                <span v-else class="source-avatar fallback">
+                  {{ sourceInitial(source.name) }}
+                </span>
+                <div>
+                  <strong>{{ source.name }}</strong>
+                  <span>{{ sourceDescription(source) }}</span>
+                </div>
+              </div>
+              <button
+                class="small-button"
+                type="button"
+                :disabled="source.already_added || sourceAddLoading"
+                @click="addSourceFromModal(source)"
+              >
+                {{ source.already_added ? "已添加" : sourceAddLoading ? "添加中..." : "添加" }}
+              </button>
+            </article>
+            <div v-if="sourceSearchResults.length === 0" class="empty-state">
+              未找到匹配的公众号
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="modal-header">
+            <div>
+              <h2 id="source-url-title">通过文章链接添加</h2>
+              <p>粘贴公众号文章链接，解析文章所属公众号后添加为源。</p>
+            </div>
+          </div>
+          <form class="modal-form" @submit.prevent="submitSourceUrl">
+            <label>
+              <span>文章链接</span>
+              <textarea
+                v-model="sourceArticleUrl"
+                rows="4"
+                placeholder="https://mp.weixin.qq.com/s/..."
+              ></textarea>
+            </label>
+            <div class="modal-actions">
+              <button class="ghost-button" type="button" @click="closeSourceModal">取消</button>
+              <button
+                class="primary-button"
+                type="submit"
+                :disabled="sourceUrlLoading || !sourceArticleUrl.trim()"
+              >
+                {{ sourceUrlLoading ? "解析中..." : "解析" }}
+              </button>
+            </div>
+          </form>
+          <div v-if="sourceUrlSubmitted" class="url-preview-box">
+            <strong>文章链接已提交解析</strong>
+            <span>{{ sourceArticleUrl }}</span>
+          </div>
+        </template>
       </section>
     </div>
 

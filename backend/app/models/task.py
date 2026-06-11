@@ -12,13 +12,20 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.enums import TaskStatus, TaskType
 
 
+def enum_values(enum_cls: type) -> list[str]:
+    return [item.value for item in enum_cls]
+
+
 class CollectionTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "collection_tasks"
 
     user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
-    task_type: Mapped[TaskType] = mapped_column(Enum(TaskType, name="task_type"), index=True)
+    task_type: Mapped[TaskType] = mapped_column(
+        Enum(TaskType, name="task_type", values_callable=enum_values),
+        index=True,
+    )
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus, name="task_status"),
+        Enum(TaskStatus, name="task_status", values_callable=enum_values),
         default=TaskStatus.PENDING,
         index=True,
     )
@@ -31,4 +38,3 @@ class CollectionTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
