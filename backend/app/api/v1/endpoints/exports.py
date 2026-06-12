@@ -16,7 +16,6 @@ class CreateExportRequest(BaseModel):
     name: str
     format: str
     article_ids: list[str]
-    include_comments: bool = True
 
 
 @router.get("", response_model=list[ExportJobResponse])
@@ -47,6 +46,4 @@ async def create_export_job(payload: CreateExportRequest) -> dict[str, object]:
         "name": payload.name,
         "format": payload.format,
         "article_ids": payload.article_ids,
-        "include_comments": payload.include_comments,
     }
-

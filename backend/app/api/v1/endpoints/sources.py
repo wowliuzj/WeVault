@@ -43,7 +43,6 @@ class SourceResponse(BaseModel):
     source_from: str
     status: str
     auto_fetch_content: bool
-    auto_fetch_comments: bool
     last_article_at: datetime | None = None
     last_list_fetched_at: datetime | None = None
     last_content_fetched_at: datetime | None = None

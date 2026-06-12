@@ -45,7 +45,6 @@ export type WechatSource = {
   source_from: "search" | "article_url" | "manual";
   status: "active" | "paused" | "failed";
   auto_fetch_content: boolean;
-  auto_fetch_comments: boolean;
   last_article_at: string | null;
   last_list_fetched_at: string | null;
   last_content_fetched_at: string | null;
@@ -70,7 +69,7 @@ export type SourceSearchResponse = {
 
 export type CollectionTask = {
   id: string;
-  task_type: "fetch_source_articles" | "fetch_article_content" | "fetch_article_comments" | "export_articles";
+  task_type: "fetch_source_articles" | "fetch_article_content" | "export_articles";
   status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
   progress_current: number;
   progress_total: number;
@@ -82,6 +81,42 @@ export type CollectionTask = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+};
+
+export type ArticleSource = {
+  id: string;
+  name: string;
+  avatar_url: string | null;
+  avatar_asset_url: string | null;
+};
+
+export type Article = {
+  id: string;
+  title: string;
+  author: string | null;
+  digest: string | null;
+  cover_url: string | null;
+  cover_asset_url: string | null;
+  original_url: string;
+  publish_time: string | null;
+  content_status: "pending" | "running" | "fetched" | "failed";
+  source: ArticleSource;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ArticleDetail = Article & {
+  content_clean_html: string | null;
+  content_plain_text: string | null;
+  content_markdown: string | null;
+  content_fetched_at: string | null;
+};
+
+export type ArticleListResponse = {
+  items: Article[];
+  total: number;
+  page: number;
+  page_size: number;
 };
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -124,4 +159,18 @@ export function getSourceAvatarUrl(
     return "";
   }
   return `${API_BASE_URL}/sources/avatar?url=${encodeURIComponent(url)}`;
+}
+
+export function getArticleCoverUrl(article: {
+  cover_asset_url?: string | null;
+  cover_url: string | null;
+}): string {
+  if (article.cover_asset_url) {
+    return getApiUrl(article.cover_asset_url);
+  }
+  const url = article.cover_url;
+  if (!url) {
+    return "";
+  }
+  return `${API_BASE_URL}/articles/cover?url=${encodeURIComponent(url)}`;
 }

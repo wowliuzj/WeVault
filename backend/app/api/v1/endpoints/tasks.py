@@ -38,7 +38,6 @@ class CreateSourceArticleTaskRequest(BaseModel):
     range: Literal["7d", "30d", "90d", "all"] = "7d"
     limit: Literal[0, 30, 50, 100] = 50
     fetch_content: bool = False
-    fetch_comments: bool = False
     skip_existing: bool = True
 
 
@@ -50,6 +49,13 @@ def task_run_mode(task: CollectionTask) -> str:
 
 def task_note(task: CollectionTask, source_name: str | None = None) -> str:
     payload = task.payload or {}
+    article_ids = payload.get("article_ids")
+    if isinstance(article_ids, list):
+        action_label = {
+            TaskType.FETCH_ARTICLE_CONTENT: "抓取正文",
+        }.get(task.task_type, "处理文章")
+        return f"文章 {len(article_ids)} 篇 · {action_label}"
+
     range_label = {
         "7d": "最近 7 天",
         "30d": "最近 30 天",
@@ -59,9 +65,8 @@ def task_note(task: CollectionTask, source_name: str | None = None) -> str:
     limit = payload.get("limit", 50)
     limit_label = "不设限" if limit == 0 else f"最多 {limit} 篇"
     content_label = "含正文" if payload.get("fetch_content") else "仅列表"
-    comment_label = "含评论" if payload.get("fetch_comments") else "不含评论"
     source_label = source_name or "公众号源"
-    return f"{source_label} · {range_label} · {limit_label} · {content_label} · {comment_label}"
+    return f"{source_label} · {range_label} · {limit_label} · {content_label}"
 
 
 def serialize_task(task: CollectionTask, source_name: str | None = None) -> TaskResponse:
@@ -145,7 +150,6 @@ async def create_source_article_task(
         "range": payload.range,
         "limit": payload.limit,
         "fetch_content": payload.fetch_content,
-        "fetch_comments": payload.fetch_comments,
         "skip_existing": payload.skip_existing,
         "run_mode": "immediate",
     }
@@ -164,6 +168,25 @@ async def create_source_article_task(
     await db.commit()
     await db.refresh(task)
     return serialize_task(task, source.name)
+
+
+@router.get("/{task_id}", response_model=TaskResponse)
+async def get_task(
+    task_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskResponse:
+    task = await get_user_task(db, current_user, task_id)
+    source_name = None
+    if task.target_type == "wechat_source" and task.target_id:
+        result = await db.execute(
+            select(WechatSource.name).where(
+                WechatSource.id == task.target_id,
+                WechatSource.user_id == current_user.id,
+            )
+        )
+        source_name = result.scalar_one_or_none()
+    return serialize_task(task, source_name)
 
 
 @router.post("/{task_id}/start", response_model=TaskResponse)

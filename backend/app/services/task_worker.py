@@ -15,6 +15,8 @@ from app.models.enums import FetchStatus, TaskStatus, TaskType
 from app.models.task import CollectionTask
 from app.models.user import User
 from app.models.wechat import WechatSource
+from app.services.article_assets import cache_article_cover
+from app.services.article_fetcher import fetch_article_content
 from app.services.sources import get_active_authorized_session
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
 
@@ -57,6 +59,8 @@ async def run_task(task_id: UUID) -> None:
             task = await load_task(db, task_id)
             if task.task_type == TaskType.FETCH_SOURCE_ARTICLES:
                 await fetch_source_articles(db, task)
+            elif task.task_type == TaskType.FETCH_ARTICLE_CONTENT:
+                await fetch_article_batch(db, task)
             else:
                 raise RuntimeError(f"暂不支持的任务类型：{task.task_type.value}")
 
@@ -143,8 +147,7 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
         f"task={task.id} source={source.id} name={source.name} "
         f"account={account.nickname} range={payload.get('range', '7d')} "
         f"limit={int(payload.get('limit') or 0)} "
-        f"fetch_content={bool(payload.get('fetch_content'))} "
-        f"fetch_comments={bool(payload.get('fetch_comments'))}"
+        f"fetch_content={bool(payload.get('fetch_content'))}"
     )
     headers = {**MP_HEADERS, "Cookie": wechat_login_manager._cookie_header(cookies)}
     cutoff = task_cutoff(payload)
@@ -223,6 +226,7 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                     account.id,
                     article_data,
                     skip_existing=skip_existing,
+                    cookies=cookies,
                 )
                 saved_count += 1
                 task.progress_current = saved_count
@@ -253,12 +257,67 @@ async def load_source(db: AsyncSession, user_id: UUID, source_id: UUID) -> Wecha
         select(WechatSource).where(
             WechatSource.id == source_id,
             WechatSource.user_id == user_id,
+            WechatSource.deleted_at.is_(None),
         )
     )
     source = result.scalar_one_or_none()
     if source is None:
         raise RuntimeError("公众号源不存在。")
     return source
+
+
+async def load_task_articles(db: AsyncSession, task: CollectionTask) -> list[Article]:
+    payload = task.payload or {}
+    article_ids = payload.get("article_ids")
+    if not isinstance(article_ids, list) or not article_ids:
+        raise RuntimeError("任务缺少 article_ids。")
+
+    ids = [UUID(str(article_id)) for article_id in article_ids]
+    result = await db.execute(
+        select(Article).where(
+            Article.user_id == task.user_id,
+            Article.id.in_(ids),
+        )
+    )
+    articles = list(result.scalars().all())
+    if len(articles) != len(set(ids)):
+        raise RuntimeError("部分文章不存在。")
+    article_by_id = {article.id: article for article in articles}
+    return [article_by_id[article_id] for article_id in ids]
+
+
+async def fetch_article_batch(
+    db: AsyncSession,
+    task: CollectionTask,
+) -> None:
+    user = await load_user(db, task.user_id)
+    try:
+        _, _, cookies, _ = await get_active_authorized_session(db, user)
+    except Exception as exc:
+        log(f"task={task.id} content fetch continuing without authorization error={exc}")
+        cookies = None
+
+    articles = await load_task_articles(db, task)
+    task.progress_current = 0
+    task.progress_total = len(articles)
+    await db.commit()
+
+    failures: list[str] = []
+    for index, article in enumerate(articles, start=1):
+        await ensure_not_cancelled(db, task)
+        log(f"task={task.id} fetching content article={article.id} title={article.title}")
+        try:
+            await fetch_article_content(db, article, cookies=cookies)
+            log(f"task={task.id} fetched content article={article.id}")
+        except Exception as exc:
+            failures.append(f"{article.title}: {exc}")
+            log(f"task={task.id} fetch content failed article={article.id} error={exc}")
+
+        task.progress_current = index
+        await db.commit()
+
+    if failures:
+        raise RuntimeError("；".join(failures[:3]))
 
 
 async def upsert_article(
@@ -268,6 +327,7 @@ async def upsert_article(
     article_data: dict[str, Any],
     *,
     skip_existing: bool,
+    cookies: list[dict[str, Any]] | None,
 ) -> None:
     article = None
     if article_data["appmsgid"] and article_data["itemidx"] is not None:
@@ -280,31 +340,42 @@ async def upsert_article(
         )
         article = result.scalar_one_or_none()
 
+    if article is not None and article.deleted_at is not None:
+        log(f"skip deleted article source={source.id} appmsgid={article.appmsgid}")
+        return
+
     if article is not None and skip_existing:
+        if article.cover_url and not article.cover_storage_path:
+            cached = await cache_article_cover(article, cookies=cookies)
+            if not cached:
+                log(f"cover cache failed article={article.id} title={article.title}")
         return
 
     if article is None:
-        db.add(
-            Article(
-                user_id=source.user_id,
-                source_id=source.id,
-                wechat_account_id=wechat_account_id,
-                title=article_data["title"],
-                author=article_data["author"],
-                digest=article_data["digest"],
-                cover_url=article_data["cover_url"],
-                original_url=article_data["original_url"],
-                publish_time=article_data["publish_time"],
-                msgid=article_data["msgid"],
-                idx=article_data["idx"],
-                biz=source.biz,
-                appmsgid=article_data["appmsgid"],
-                itemidx=article_data["itemidx"],
-                content_status=FetchStatus.PENDING,
-                comment_status=FetchStatus.PENDING,
-                raw_data=article_data["raw_data"],
-            )
+        article = Article(
+            user_id=source.user_id,
+            source_id=source.id,
+            wechat_account_id=wechat_account_id,
+            title=article_data["title"],
+            author=article_data["author"],
+            digest=article_data["digest"],
+            cover_url=article_data["cover_url"],
+            original_url=article_data["original_url"],
+            publish_time=article_data["publish_time"],
+            msgid=article_data["msgid"],
+            idx=article_data["idx"],
+            biz=source.biz,
+            appmsgid=article_data["appmsgid"],
+            itemidx=article_data["itemidx"],
+            content_status=FetchStatus.PENDING,
+            comment_status=FetchStatus.PENDING,
+            raw_data=article_data["raw_data"],
         )
+        db.add(article)
+        await db.flush()
+        cached = await cache_article_cover(article, cookies=cookies)
+        if not cached:
+            log(f"cover cache failed article={article.id} title={article.title}")
         return
 
     article.title = article_data["title"]
@@ -316,6 +387,9 @@ async def upsert_article(
     article.msgid = article_data["msgid"]
     article.idx = article_data["idx"]
     article.raw_data = article_data["raw_data"]
+    cached = await cache_article_cover(article, cookies=cookies)
+    if not cached:
+        log(f"cover cache failed article={article.id} title={article.title}")
 
 
 async def run_worker_loop(poll_interval: float) -> None:

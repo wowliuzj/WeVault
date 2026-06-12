@@ -10,11 +10,11 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.article import Article, ArticleComment, ArticleContent
+from app.models.article import Article
 from app.models.enums import SourceFrom, SourceStatus, TokenStatus
 from app.models.user import User
 from app.models.wechat import WechatAccount, WechatSession, WechatSource
@@ -145,7 +145,6 @@ def _serialize_source(
         "source_from": source.source_from.value,
         "status": source.status.value,
         "auto_fetch_content": source.auto_fetch_content,
-        "auto_fetch_comments": source.auto_fetch_comments,
         "last_article_at": last_article_at,
         "last_list_fetched_at": source.last_list_fetched_at,
         "last_content_fetched_at": source.last_content_fetched_at,
@@ -211,8 +210,11 @@ async def list_user_sources(db: AsyncSession, user: User) -> list[dict[str, Any]
             func.count(Article.id).label("article_count"),
             func.max(Article.publish_time).label("last_article_at"),
         )
-        .outerjoin(Article, Article.source_id == WechatSource.id)
-        .where(WechatSource.user_id == user.id)
+        .outerjoin(
+            Article,
+            (Article.source_id == WechatSource.id) & (Article.deleted_at.is_(None)),
+        )
+        .where(WechatSource.user_id == user.id, WechatSource.deleted_at.is_(None))
         .group_by(WechatSource.id)
         .order_by(WechatSource.updated_at.desc())
     )
@@ -271,6 +273,7 @@ async def search_wechat_sources(
             select(WechatSource.fakeid).where(
                 WechatSource.user_id == user.id,
                 WechatSource.fakeid.in_(fakeids),
+                WechatSource.deleted_at.is_(None),
             )
         )
         existing = {value for value in existing_result.scalars().all() if value}
@@ -323,6 +326,7 @@ async def add_source_from_search(
         source.avatar_url = payload.get("avatar_url") or source.avatar_url
         source.description = payload.get("description") or source.description
         source.status = SourceStatus.ACTIVE
+        source.deleted_at = None
         source.raw_data = payload.get("raw_data") or payload
 
     await cache_source_avatar(source)
@@ -393,6 +397,7 @@ async def add_source_from_article_url(
     else:
         source.wechat_account_id = account.id
         source.status = SourceStatus.ACTIVE
+        source.deleted_at = None
         source.raw_data = {**(source.raw_data or {}), "article_url": article_url}
 
     await cache_source_avatar(source)
@@ -406,6 +411,7 @@ async def get_user_source(db: AsyncSession, user: User, source_id: str) -> Wecha
         select(WechatSource).where(
             WechatSource.id == source_id,
             WechatSource.user_id == user.id,
+            WechatSource.deleted_at.is_(None),
         )
     )
     source = result.scalar_one_or_none()
@@ -462,12 +468,14 @@ async def update_source_status(
 
 async def delete_source_tree(db: AsyncSession, user: User, source_id: str) -> None:
     source = await get_user_source(db, user, source_id)
-    article_ids = select(Article.id).where(Article.source_id == source.id)
-
-    await db.execute(delete(ArticleComment).where(ArticleComment.article_id.in_(article_ids)))
-    await db.execute(delete(ArticleContent).where(ArticleContent.article_id.in_(article_ids)))
-    await db.execute(delete(Article).where(Article.source_id == source.id))
-    await db.delete(source)
+    now = datetime.now(UTC)
+    source.deleted_at = now
+    source.status = SourceStatus.PAUSED
+    article_result = await db.execute(
+        select(Article).where(Article.source_id == source.id, Article.deleted_at.is_(None))
+    )
+    for article in article_result.scalars().all():
+        article.deleted_at = now
     await db.commit()
 
 

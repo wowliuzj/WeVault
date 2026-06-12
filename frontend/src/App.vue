@@ -3,8 +3,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import {
   apiRequest,
+  getArticleCoverUrl,
   getAuthHeaders,
   getSourceAvatarUrl,
+  type Article,
+  type ArticleListResponse,
   type CollectionTask,
   type SourceSearchItem,
   type SourceSearchResponse,
@@ -41,21 +44,21 @@ const views: Array<{ id: ViewId; label: string; icon: string; title: string; sub
     label: "公众号源",
     icon: "◎",
     title: "公众号源",
-    subtitle: "添加公众号后先同步文章列表，再按策略抓正文和评论。",
+    subtitle: "添加公众号后先同步文章列表，再按策略抓正文。",
   },
   {
     id: "articles",
     label: "文章库",
     icon: "≡",
     title: "文章库",
-    subtitle: "统一管理文章列表、正文状态、评论状态和导出操作。",
+    subtitle: "统一管理文章列表、正文状态和导出操作。",
   },
   {
     id: "tasks",
     label: "采集任务",
     icon: "↻",
     title: "采集任务",
-    subtitle: "跟踪列表同步、正文抓取、评论抓取和导出任务。",
+    subtitle: "跟踪列表同步、正文抓取和导出任务。",
   },
   {
     id: "exports",
@@ -80,8 +83,6 @@ const recentArticles = [
     publishedAt: "2026-06-09",
     contentStatus: "已抓取",
     contentTag: "success",
-    commentStatus: "已抓取",
-    commentTag: "success",
     action: "导出",
   },
   {
@@ -90,8 +91,6 @@ const recentArticles = [
     publishedAt: "2026-06-08",
     contentStatus: "待抓取",
     contentTag: "warning",
-    commentStatus: "未开始",
-    commentTag: "muted",
     action: "抓取",
   },
   {
@@ -100,8 +99,6 @@ const recentArticles = [
     publishedAt: "2026-06-07",
     contentStatus: "抓取中",
     contentTag: "progress",
-    commentStatus: "未开始",
-    commentTag: "muted",
     action: "查看",
   },
 ];
@@ -109,7 +106,7 @@ const recentArticles = [
 const exports = [
   { name: "产品笔记精选 24 篇", note: "PDF · 保留文本 · 28.4 MB" },
   { name: "企业知识库专题", note: "DOCX · 16 篇文章 · 12.1 MB" },
-  { name: "SaaS 方法论评论包", note: "Markdown ZIP · 包含评论" },
+  { name: "SaaS 方法论精选", note: "Markdown ZIP · 保留正文" },
 ];
 
 const activeView = ref<ViewId>("dashboard");
@@ -157,15 +154,29 @@ const taskSubmitting = ref(false);
 const tasks = ref<CollectionTask[]>([]);
 const taskPage = ref(1);
 const taskPageSize = ref(10);
+const articleLoading = ref(false);
+const articleOperatingId = ref("");
+const articles = ref<Article[]>([]);
+const articleTotal = ref(0);
+const articlePage = ref(1);
+const articlePageSize = ref(20);
+const articleKeyword = ref("");
+const articleSourceId = ref("");
+const selectedArticleIds = ref<Set<string>>(new Set());
+const instantArticleTask = ref<{
+  taskId: string;
+  articleTitle: string;
+} | null>(null);
 const taskForm = ref({
   range: "7d",
   limit: 50,
   fetchContent: false,
-  fetchComments: false,
   skipExisting: true,
 });
 let wechatLoginTimer: number | undefined;
 let toastTimer: number | undefined;
+let instantArticleTaskTimer: number | undefined;
+let instantArticleTaskTimeout: number | undefined;
 
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
 const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
@@ -173,6 +184,12 @@ const showWechatLoginModal = computed(() => Boolean(wechatLoginSession.value || 
 const showWechatLoginLoading = computed(
   () => wechatLoginLoading.value && !showWechatLoginModal.value,
 );
+const instantArticleTaskLabel = computed(() => {
+  if (!instantArticleTask.value) {
+    return "";
+  }
+  return "正在抓取正文";
+});
 const wechatStatusLabel = computed(() => {
   if (wechatLoading.value) {
     return "读取中";
@@ -215,6 +232,23 @@ const paginatedTasks = computed(() => {
   const start = (page - 1) * taskPageSize.value;
   return tasks.value.slice(start, start + taskPageSize.value);
 });
+const articlePageCount = computed(() =>
+  Math.max(1, Math.ceil(articleTotal.value / articlePageSize.value)),
+);
+const selectedArticles = computed(() =>
+  articles.value.filter((article) => selectedArticleIds.value.has(article.id)),
+);
+const hasSelectedArticles = computed(() => selectedArticleIds.value.size > 0);
+const canBatchFetchContent = computed(() =>
+  selectedArticles.value.some((article) =>
+    ["pending", "failed"].includes(article.content_status),
+  ),
+);
+const allVisibleArticlesSelected = computed(
+  () =>
+    articles.value.length > 0 &&
+    articles.value.every((article) => selectedArticleIds.value.has(article.id)),
+);
 
 function setSession(response: TokenResponse) {
   token.value = response.access_token;
@@ -237,6 +271,7 @@ async function loadCurrentUser() {
     });
     await loadWechatAccount();
     await loadSources();
+    await loadArticles();
     await loadTasks();
   } catch {
     logout();
@@ -288,6 +323,10 @@ function setView(viewId: ViewId) {
   }
   if (viewId === "sources") {
     void loadSources();
+  }
+  if (viewId === "articles") {
+    void loadSources();
+    void loadArticles();
   }
   if (viewId === "tasks") {
     void loadTasks();
@@ -434,6 +473,14 @@ function sourceAvatarSrc(source: WechatSource | SourceSearchItem) {
   return getSourceAvatarUrl(source);
 }
 
+function articleCoverSrc(article: Article) {
+  return getArticleCoverUrl(article);
+}
+
+function articleSourceAvatarSrc(article: Article) {
+  return getSourceAvatarUrl(article.source);
+}
+
 function isSourceAvatarBroken(source: WechatSource | SourceSearchItem) {
   return Boolean(source.avatar_url && brokenSourceAvatars.value.has(source.avatar_url));
 }
@@ -464,13 +511,93 @@ function setTaskPageSize(event: Event) {
   taskPage.value = 1;
 }
 
+function setArticlePage(page: number) {
+  articlePage.value = Math.min(Math.max(page, 1), articlePageCount.value);
+  void loadArticles();
+}
+
+function setArticlePageSize(event: Event) {
+  const target = event.target as HTMLSelectElement;
+  articlePageSize.value = Number(target.value);
+  articlePage.value = 1;
+  void loadArticles();
+}
+
+function searchArticles() {
+  articlePage.value = 1;
+  void loadArticles();
+}
+
+function resetArticleFilters() {
+  articleKeyword.value = "";
+  articleSourceId.value = "";
+  articlePage.value = 1;
+  void loadArticles();
+}
+
+function articleStatusLabel(status: Article["content_status"]) {
+  const labels: Record<Article["content_status"], string> = {
+    pending: "未抓取",
+    running: "抓取中",
+    fetched: "已抓取",
+    failed: "失败",
+  };
+  return labels[status];
+}
+
+function articleStatusTag(status: Article["content_status"]) {
+  if (status === "fetched") {
+    return "success";
+  }
+  if (status === "running") {
+    return "progress";
+  }
+  if (status === "failed") {
+    return "warning";
+  }
+  return "muted";
+}
+
+function toggleArticleSelection(article: Article) {
+  const next = new Set(selectedArticleIds.value);
+  if (next.has(article.id)) {
+    next.delete(article.id);
+  } else {
+    next.add(article.id);
+  }
+  selectedArticleIds.value = next;
+}
+
+function toggleVisibleArticleSelection() {
+  if (allVisibleArticlesSelected.value) {
+    const next = new Set(selectedArticleIds.value);
+    articles.value.forEach((article) => next.delete(article.id));
+    selectedArticleIds.value = next;
+    return;
+  }
+
+  selectedArticleIds.value = new Set([
+    ...selectedArticleIds.value,
+    ...articles.value.map((article) => article.id),
+  ]);
+}
+
+function clearArticleSelection() {
+  selectedArticleIds.value = new Set();
+}
+
+function selectedFetchableArticleIds() {
+  return selectedArticles.value
+    .filter((article) => ["pending", "failed"].includes(article.content_status))
+    .map((article) => article.id);
+}
+
 function openTaskModal(source: WechatSource) {
   selectedTaskSource.value = source;
   taskForm.value = {
     range: "7d",
     limit: 50,
     fetchContent: false,
-    fetchComments: false,
     skipExisting: true,
   };
   sourceModalMode.value = "task";
@@ -478,9 +605,6 @@ function openTaskModal(source: WechatSource) {
 
 function toggleTaskFetchContent(value: boolean) {
   taskForm.value.fetchContent = value;
-  if (!value) {
-    taskForm.value.fetchComments = false;
-  }
 }
 
 async function createSourceArticleTask() {
@@ -498,7 +622,6 @@ async function createSourceArticleTask() {
         range: taskForm.value.range,
         limit: taskForm.value.limit,
         fetch_content: taskForm.value.fetchContent,
-        fetch_comments: taskForm.value.fetchComments,
         skip_existing: taskForm.value.skipExisting,
       }),
     });
@@ -569,6 +692,156 @@ async function deleteSource(source: WechatSource) {
     showToast("error", error instanceof Error ? error.message : "删除公众号源失败");
   } finally {
     sourceOperatingId.value = "";
+  }
+}
+
+async function refreshArticle(article: Article) {
+  articleOperatingId.value = article.id;
+  try {
+    const updatedArticle = await apiRequest<Article>(`/articles/${article.id}/refresh`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    articles.value = articles.value.map((item) =>
+      item.id === updatedArticle.id ? updatedArticle : item,
+    );
+    showToast("success", "文章信息已刷新");
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "刷新文章失败");
+  } finally {
+    articleOperatingId.value = "";
+  }
+}
+
+function viewArticle(article: Article) {
+  window.open(article.original_url, "_blank", "noopener,noreferrer");
+}
+
+async function deleteArticle(article: Article) {
+  const confirmed = window.confirm(`删除文章「${article.title}」？`);
+  if (!confirmed) {
+    return;
+  }
+
+  articleOperatingId.value = article.id;
+  try {
+    await apiRequest(`/articles/${article.id}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    selectedArticleIds.value = new Set(
+      [...selectedArticleIds.value].filter((articleId) => articleId !== article.id),
+    );
+    showToast("success", "文章已删除");
+    await loadArticles();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "删除文章失败");
+  } finally {
+    articleOperatingId.value = "";
+  }
+}
+
+async function createArticleFetchTask(
+  articleIds: string[],
+  options: { silent?: boolean } = {},
+) {
+  if (articleIds.length === 0) {
+    return undefined;
+  }
+
+  try {
+    const response = await apiRequest<{ status: string; task_id: string }>(
+      "/articles/fetch-content",
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ article_ids: articleIds }),
+      },
+    );
+    if (!options.silent) {
+      showToast("success", "正文抓取任务已创建");
+    }
+    await loadTasks();
+    return response.task_id;
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "创建抓取任务失败");
+    return undefined;
+  }
+}
+
+async function fetchArticle(article: Article) {
+  const taskId = await createArticleFetchTask([article.id], { silent: true });
+  if (!taskId) {
+    return;
+  }
+  startInstantArticleTaskPolling(taskId, article);
+}
+
+async function fetchSelectedArticles() {
+  await createArticleFetchTask(selectedFetchableArticleIds());
+  clearArticleSelection();
+}
+
+function stopInstantArticleTaskPolling() {
+  if (instantArticleTaskTimer !== undefined) {
+    window.clearInterval(instantArticleTaskTimer);
+    instantArticleTaskTimer = undefined;
+  }
+  if (instantArticleTaskTimeout !== undefined) {
+    window.clearTimeout(instantArticleTaskTimeout);
+    instantArticleTaskTimeout = undefined;
+  }
+}
+
+function startInstantArticleTaskPolling(
+  taskId: string,
+  article: Article,
+) {
+  stopInstantArticleTaskPolling();
+  instantArticleTask.value = {
+    taskId,
+    articleTitle: article.title,
+  };
+
+  instantArticleTaskTimer = window.setInterval(() => {
+    void pollInstantArticleTask(taskId);
+  }, 1500);
+  instantArticleTaskTimeout = window.setTimeout(() => {
+    stopInstantArticleTaskPolling();
+    instantArticleTask.value = null;
+    showToast("success", "抓取时间较长，已转入后台任务");
+    void loadTasks();
+  }, 15000);
+  void pollInstantArticleTask(taskId);
+}
+
+async function pollInstantArticleTask(taskId: string) {
+  if (!instantArticleTask.value || instantArticleTask.value.taskId !== taskId) {
+    return;
+  }
+
+  try {
+    const task = await apiRequest<CollectionTask>(`/tasks/${taskId}`, {
+      headers: authHeaders(),
+    });
+    if (task.status === "succeeded") {
+      stopInstantArticleTaskPolling();
+      instantArticleTask.value = null;
+      showToast("success", "抓取完成");
+      await loadArticles();
+      await loadTasks();
+    } else if (["failed", "cancelled"].includes(task.status)) {
+      stopInstantArticleTaskPolling();
+      instantArticleTask.value = null;
+      showToast("error", task.error_message || "抓取失败");
+      await loadArticles();
+      await loadTasks();
+    }
+  } catch (error) {
+    stopInstantArticleTaskPolling();
+    instantArticleTask.value = null;
+    showToast("error", error instanceof Error ? error.message : "读取抓取任务失败");
   }
 }
 
@@ -680,6 +953,11 @@ async function logout() {
   currentUser.value = null;
   wechatAccount.value = null;
   sources.value = [];
+  articles.value = [];
+  articleTotal.value = 0;
+  selectedArticleIds.value = new Set();
+  stopInstantArticleTaskPolling();
+  instantArticleTask.value = null;
   closeWechatLogin();
   userMenuOpen.value = false;
   localStorage.removeItem("wevault_token");
@@ -846,6 +1124,47 @@ async function loadSources() {
   }
 }
 
+async function loadArticles() {
+  if (!token.value) {
+    articles.value = [];
+    articleTotal.value = 0;
+    selectedArticleIds.value = new Set();
+    return;
+  }
+
+  articleLoading.value = true;
+  const params = new URLSearchParams({
+    page: String(articlePage.value),
+    page_size: String(articlePageSize.value),
+  });
+  if (articleKeyword.value.trim()) {
+    params.set("keyword", articleKeyword.value.trim());
+  }
+  if (articleSourceId.value) {
+    params.set("source_id", articleSourceId.value);
+  }
+
+  try {
+    const response = await apiRequest<ArticleListResponse>(`/articles?${params.toString()}`, {
+      headers: authHeaders(),
+    });
+    articles.value = response.items;
+    articleTotal.value = response.total;
+    selectedArticleIds.value = new Set(
+      [...selectedArticleIds.value].filter((articleId) =>
+        response.items.some((article) => article.id === articleId),
+      ),
+    );
+    if (articlePage.value > articlePageCount.value) {
+      articlePage.value = articlePageCount.value;
+    }
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "读取文章库失败");
+  } finally {
+    articleLoading.value = false;
+  }
+}
+
 async function loadTasks() {
   if (!token.value) {
     tasks.value = [];
@@ -875,6 +1194,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", closeUserMenu);
   stopWechatLoginPolling();
+  stopInstantArticleTaskPolling();
   if (toastTimer !== undefined) {
     window.clearTimeout(toastTimer);
   }
@@ -1077,9 +1397,9 @@ onBeforeUnmount(() => {
             <div class="metric-note">已抓正文 426 篇</div>
           </article>
           <article class="metric">
-            <div class="metric-label">评论</div>
-            <div class="metric-value">9,672</div>
-            <div class="metric-note">今日新增 248 条</div>
+            <div class="metric-label">导出中心</div>
+            <div class="metric-value">18</div>
+            <div class="metric-note">本周生成 6 个文件</div>
           </article>
         </div>
 
@@ -1088,7 +1408,7 @@ onBeforeUnmount(() => {
             <div class="panel-header">
               <div>
                 <h2>最近文章</h2>
-                <p>列表同步后，用户可以选择需要抓正文和评论的文章。</p>
+                <p>列表同步后，用户可以选择需要抓正文的文章。</p>
               </div>
               <button class="small-button" type="button">批量抓取</button>
             </div>
@@ -1100,7 +1420,6 @@ onBeforeUnmount(() => {
                     <th>公众号</th>
                     <th>发布时间</th>
                     <th>正文</th>
-                    <th>评论</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1109,7 +1428,6 @@ onBeforeUnmount(() => {
                     <td>{{ article.source }}</td>
                     <td>{{ article.publishedAt }}</td>
                     <td><span class="tag" :class="article.contentTag">{{ article.contentStatus }}</span></td>
-                    <td><span class="tag" :class="article.commentTag">{{ article.commentStatus }}</span></td>
                   </tr>
                 </tbody>
               </table>
@@ -1486,50 +1804,243 @@ onBeforeUnmount(() => {
               <h2>文章库</h2>
               <p>文章列表与正文抓取分离，方便用户控制采集范围。</p>
             </div>
-            <div class="inline-actions">
-              <button class="ghost-button" type="button">抓取评论</button>
-              <button class="primary-button" type="button">抓取正文</button>
-            </div>
+            <button class="ghost-button" type="button" :disabled="articleLoading" @click="loadArticles">
+              {{ articleLoading ? "刷新中..." : "刷新" }}
+            </button>
           </div>
-          <div class="filter-bar">
-            <input type="search" placeholder="搜索标题、公众号、作者" />
-            <select>
-              <option>全部公众号</option>
-              <option>产品笔记</option>
-              <option>技术观察站</option>
+          <form class="filter-bar article-filter-bar" @submit.prevent="searchArticles">
+            <input
+              v-model="articleKeyword"
+              type="search"
+              placeholder="搜索标题、公众号、作者"
+            />
+            <select v-model="articleSourceId">
+              <option value="">全部公众号</option>
+              <option v-for="source in sources" :key="source.id" :value="source.id">
+                {{ source.name }}
+              </option>
             </select>
-            <select>
-              <option>全部状态</option>
-              <option>正文待抓取</option>
-              <option>评论待抓取</option>
-            </select>
+            <button class="primary-button" type="submit" :disabled="articleLoading">搜索</button>
+            <button class="ghost-button" type="button" :disabled="articleLoading" @click="resetArticleFilters">
+              重置
+            </button>
+          </form>
+
+          <div v-if="hasSelectedArticles" class="article-bulk-bar">
+            <span>已选择 {{ selectedArticleIds.size }} 篇</span>
+            <button
+              v-if="canBatchFetchContent"
+              class="primary-button"
+              type="button"
+              @click="fetchSelectedArticles"
+            >
+              抓取正文
+            </button>
+            <button class="link-button" type="button" @click="clearArticleSelection">取消选择</button>
           </div>
-          <div class="table-wrap">
-            <table>
+
+          <div v-if="articleLoading" class="empty-state">正在读取文章库</div>
+          <div v-else-if="articles.length === 0" class="empty-state">还没有文章</div>
+          <template v-else>
+            <div class="article-table-wrap">
+              <table class="article-table">
               <thead>
                 <tr>
-                  <th><input type="checkbox" aria-label="全选文章" /></th>
-                  <th>标题</th>
+                  <th>
+                    <input
+                      type="checkbox"
+                      aria-label="全选当前页文章"
+                      :checked="allVisibleArticlesSelected"
+                      @change="toggleVisibleArticleSelection"
+                    />
+                  </th>
+                  <th>封面</th>
+                  <th>文章</th>
                   <th>公众号</th>
                   <th>发布时间</th>
                   <th>正文</th>
-                  <th>评论</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="article in recentArticles" :key="article.title">
-                  <td><input type="checkbox" /></td>
-                  <td>{{ article.title }}</td>
-                  <td>{{ article.source }}</td>
-                  <td>{{ article.publishedAt }}</td>
-                  <td><span class="tag" :class="article.contentTag">{{ article.contentStatus }}</span></td>
-                  <td><span class="tag" :class="article.commentTag">{{ article.commentStatus }}</span></td>
-                  <td><button class="link-button" type="button">{{ article.action }}</button></td>
+                <tr v-for="article in articles" :key="article.id">
+                  <td>
+                    <input
+                      type="checkbox"
+                      :aria-label="`选择 ${article.title}`"
+                      :checked="selectedArticleIds.has(article.id)"
+                      @change="toggleArticleSelection(article)"
+                    />
+                  </td>
+                  <td>
+                    <img
+                      v-if="article.cover_url"
+                      class="article-cover"
+                      :src="articleCoverSrc(article)"
+                      :alt="article.title"
+                    />
+                    <div v-else class="article-cover article-cover-empty">WV</div>
+                  </td>
+                  <td>
+                    <div class="article-title-cell">
+                      <strong>{{ article.title }}</strong>
+                      <span>{{ article.digest || "暂无摘要" }}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="article-source-cell">
+                      <img
+                        v-if="article.source.avatar_url"
+                        class="article-source-avatar"
+                        :src="articleSourceAvatarSrc(article)"
+                        :alt="article.source.name"
+                      />
+                      <div v-else class="article-source-avatar article-source-avatar-empty">
+                        {{ sourceInitial(article.source.name) }}
+                      </div>
+                      <span>{{ article.source.name }}</span>
+                    </div>
+                  </td>
+                  <td>{{ formatDateTime(article.publish_time) }}</td>
+                  <td>
+                    <button
+                      v-if="['pending', 'failed'].includes(article.content_status)"
+	                      class="link-button"
+	                      type="button"
+	                      @click="fetchArticle(article)"
+	                    >
+	                      抓取
+                    </button>
+                    <span v-else class="tag" :class="articleStatusTag(article.content_status)">
+                      {{ articleStatusLabel(article.content_status) }}
+                    </span>
+                  </td>
+	                  <td>
+                    <div class="article-actions">
+                      <button
+                        class="link-button"
+                        type="button"
+                        :disabled="articleOperatingId === article.id"
+                        @click="refreshArticle(article)"
+                      >
+                        刷新
+                      </button>
+                      <button class="link-button" type="button" @click="viewArticle(article)">
+                        查看
+                      </button>
+                      <button
+                        class="link-button danger"
+                        type="button"
+                        :disabled="articleOperatingId === article.id"
+                        @click="deleteArticle(article)"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               </tbody>
             </table>
-          </div>
+            </div>
+
+            <div class="article-card-list">
+              <article v-for="article in articles" :key="article.id" class="article-row">
+                <input
+                  type="checkbox"
+                  :aria-label="`选择 ${article.title}`"
+                  :checked="selectedArticleIds.has(article.id)"
+                  @change="toggleArticleSelection(article)"
+                />
+                <img
+                  v-if="article.cover_url"
+                  class="article-cover"
+                  :src="articleCoverSrc(article)"
+                  :alt="article.title"
+                />
+                <div v-else class="article-cover article-cover-empty">WV</div>
+                <div class="article-title-cell">
+                  <strong>{{ article.title }}</strong>
+                  <span>{{ article.digest || "暂无摘要" }}</span>
+                  <div class="article-source-cell">
+                    <img
+                      v-if="article.source.avatar_url"
+                      class="article-source-avatar"
+                      :src="articleSourceAvatarSrc(article)"
+                      :alt="article.source.name"
+                    />
+                    <div v-else class="article-source-avatar article-source-avatar-empty">
+                      {{ sourceInitial(article.source.name) }}
+                    </div>
+                    <span>{{ article.source.name }}</span>
+                    <small>{{ formatDateTime(article.publish_time) }}</small>
+                  </div>
+                  <div class="article-mobile-status">
+                    <span class="tag" :class="articleStatusTag(article.content_status)">
+                      正文 {{ articleStatusLabel(article.content_status) }}
+                    </span>
+                  </div>
+                  <div class="article-actions">
+                    <button
+                      v-if="['pending', 'failed'].includes(article.content_status)"
+                      class="link-button"
+                      type="button"
+                      @click="fetchArticle(article)"
+                    >
+                      抓取正文
+                    </button>
+                    <button class="link-button" type="button" @click="refreshArticle(article)">
+                      刷新
+                    </button>
+                    <button class="link-button" type="button" @click="viewArticle(article)">
+                      查看
+                    </button>
+                    <button class="link-button danger" type="button" @click="deleteArticle(article)">
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <div class="source-pagination">
+              <label>
+                <span>每页</span>
+                <select :value="articlePageSize" @change="setArticlePageSize">
+                  <option :value="10">10</option>
+                  <option :value="20">20</option>
+                  <option :value="50">50</option>
+                </select>
+              </label>
+              <div class="pagination-links">
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="articlePage <= 1"
+                  @click="setArticlePage(articlePage - 1)"
+                >
+                  上一页
+                </button>
+                <button
+                  v-for="page in articlePageCount"
+                  :key="page"
+                  class="page-button"
+                  :class="{ active: page === articlePage }"
+                  type="button"
+                  @click="setArticlePage(page)"
+                >
+                  {{ page }}
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="articlePage >= articlePageCount"
+                  @click="setArticlePage(articlePage + 1)"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          </template>
         </section>
       </section>
 
@@ -1538,7 +2049,7 @@ onBeforeUnmount(() => {
           <div class="panel-header">
             <div>
               <h2>采集任务</h2>
-              <p>用于观察列表同步、正文抓取、评论抓取和导出进度。</p>
+              <p>用于观察列表同步、正文抓取和导出进度。</p>
             </div>
             <button class="ghost-button" type="button" :disabled="taskLoading" @click="loadTasks">
               {{ taskLoading ? "刷新中..." : "刷新" }}
@@ -1736,10 +2247,6 @@ onBeforeUnmount(() => {
               <input type="checkbox" />
             </label>
             <label>
-              <span>正文抓取完成后自动抓取评论</span>
-              <input type="checkbox" />
-            </label>
-            <label>
               <span>每次同步最多抓取文章数</span>
               <input type="number" min="1" value="50" />
             </label>
@@ -1752,6 +2259,14 @@ onBeforeUnmount(() => {
       <div class="loading-card">
         <div class="loading-gif" aria-hidden="true"></div>
         <span>正在生成扫码二维码</span>
+      </div>
+    </div>
+
+    <div v-if="instantArticleTask" class="loading-backdrop" aria-live="polite">
+      <div class="loading-card">
+        <div class="loading-gif" aria-hidden="true"></div>
+        <span>{{ instantArticleTaskLabel }}</span>
+        <small>{{ instantArticleTask.articleTitle }}</small>
       </div>
     </div>
 
@@ -1904,14 +2419,6 @@ onBeforeUnmount(() => {
                 type="checkbox"
                 :checked="taskForm.fetchContent"
                 @change="toggleTaskFetchContent(($event.target as HTMLInputElement).checked)"
-              />
-            </label>
-            <label class="checkbox-row">
-              <span>采集评论</span>
-              <input
-                v-model="taskForm.fetchComments"
-                type="checkbox"
-                :disabled="!taskForm.fetchContent"
               />
             </label>
             <label class="checkbox-row">

@@ -92,6 +92,7 @@ class WechatSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     comment_fetch_policy: Mapped[str] = mapped_column(String(40), default="none")
     last_list_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_content_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
 
     user = relationship("User", back_populates="sources")

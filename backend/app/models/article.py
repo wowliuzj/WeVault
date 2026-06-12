@@ -38,6 +38,8 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     author: Mapped[str | None] = mapped_column(String(120))
     digest: Mapped[str | None] = mapped_column(Text)
     cover_url: Mapped[str | None] = mapped_column(Text)
+    cover_storage_path: Mapped[str | None] = mapped_column(Text)
+    cover_content_type: Mapped[str | None] = mapped_column(String(120))
     original_url: Mapped[str] = mapped_column(Text)
     publish_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     msgid: Mapped[str | None] = mapped_column(String(120), index=True)
@@ -53,6 +55,7 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Enum(FetchStatus, name="article_comment_status", values_callable=enum_values),
         default=FetchStatus.PENDING,
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
 
     user = relationship("User", back_populates="articles")
