@@ -87,6 +87,7 @@ const authForm = ref({
   email: "",
   password: "",
   displayName: "",
+  inviteCode: "",
 });
 const wechatAccount = ref<WechatAccount | null>(null);
 const wechatLoading = ref(false);
@@ -307,6 +308,7 @@ async function submitAuth() {
             email: authForm.value.email,
             password: authForm.value.password,
             display_name: authForm.value.displayName || null,
+            invite_code: authForm.value.inviteCode,
           };
 
     const response = await apiRequest<TokenResponse>(path, {
@@ -1676,6 +1678,16 @@ onBeforeUnmount(() => {
         <label v-if="authMode === 'register'">
           <span>显示名称</span>
           <input v-model="authForm.displayName" type="text" maxlength="80" autocomplete="name" />
+        </label>
+        <label v-if="authMode === 'register'">
+          <span>邀请码</span>
+          <input
+            v-model="authForm.inviteCode"
+            type="text"
+            maxlength="80"
+            autocomplete="off"
+            required
+          />
         </label>
         <label>
           <span>密码</span>

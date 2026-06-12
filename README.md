@@ -92,6 +92,19 @@ Manual export cleanup:
 python -m app.worker --cleanup-exports
 ```
 
+## Docker Backend Deployment
+
+For VPS deployments where the host Nginx serves `frontend/dist` and proxies
+`/api/v1` to a Dockerized backend, see
+[`docs/deployment-docker-backend.md`](docs/deployment-docker-backend.md).
+
+Quick backend container start:
+
+```bash
+cp .env.production.example .env.production
+docker compose -f docker-compose.backend.yml --env-file .env.production up -d --build
+```
+
 ## Planned Stack
 
 - Frontend: Vue 3, TypeScript, Vite, Naive UI

@@ -23,6 +23,12 @@ def serialize_user(user: User) -> UserResponse:
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    if payload.invite_code.strip().lower() != "cloud":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="邀请码无效",
+        )
+
     result = await db.execute(select(User).where(User.email == payload.email))
     existing_user = result.scalar_one_or_none()
     if existing_user is not None:

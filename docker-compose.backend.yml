@@ -1,0 +1,21 @@
+services:
+  wevault-backend:
+    build:
+      context: ./backend
+    image: wevault-backend:latest
+    container_name: wevault-backend
+    restart: unless-stopped
+    env_file:
+      - ${WEVAULT_ENV_FILE:-.env.production}
+    ports:
+      - "127.0.0.1:5726:5726"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5726/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
