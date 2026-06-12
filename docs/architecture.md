@@ -158,12 +158,20 @@ source .venv/bin/activate
 python -m app.worker
 ```
 
+The worker can also run multiple concurrent slots in one process, or consume a
+specific task queue:
+
+```bash
+python -m app.worker --queue fetch --concurrency 2
+python -m app.worker --queue export --concurrency 4
+```
+
 The API server and worker are intentionally separate processes:
 
 - The API server handles user actions, creates `collection_tasks`, and exposes
   start, stop, and delete operations.
-- The worker polls `collection_tasks`, picks one `pending` task at a time, and
-  performs the actual collection work.
+- The worker polls `collection_tasks`, picks `pending` tasks with row-level
+  locks, and performs the actual collection work.
 
 Current task acquisition flow:
 
@@ -176,17 +184,31 @@ Worker loop
   -> set succeeded/failed/cancelled and finished_at
 ```
 
+Each concurrent worker slot repeats this flow independently. PostgreSQL
+`SKIP LOCKED` keeps multiple slots or multiple worker processes from claiming
+the same task.
+
 The polling interval is configured with:
 
 ```text
 WORKER_POLL_INTERVAL_SECONDS=2
+WORKER_CONCURRENCY=1
+WORKER_QUEUE=all
 ```
+
+Supported queue names:
+
+- `all`: consume every supported task type
+- `fetch`: consume collection/content-fetch tasks
+- `export`: consume export tasks
 
 Current supported worker handler:
 
 - `fetch_source_articles`: fetches the article list for one public account
   source through the user's active WeChat authorization session and upserts
   article metadata into `articles`.
+- `fetch_article_content`: fetches saved articles'正文 content and stores clean
+  HTML, Markdown, plain text, and cached assets.
 
 The task payload currently carries collection options:
 
@@ -194,7 +216,6 @@ The task payload currently carries collection options:
 - `range`: `7d`, `30d`, `90d`, or `all`
 - `limit`: `30`, `50`, `100`, or `0` for no limit
 - `fetch_content`
-- `fetch_comments`
 - `skip_existing`
 - `run_mode`
 
@@ -226,4 +247,8 @@ Celery or Dramatiq with Redis:
 - Use Redis/Celery/Dramatiq for dispatching and concurrency control.
 - Keep worker handlers idempotent so retries do not duplicate articles.
 - Continue storing task timestamps, errors, and cancellation state in
-  PostgreSQL.
+PostgreSQL.
+
+For WeChat-facing fetch work, keep concurrency conservative to reduce account
+risk. Export workers can usually run with higher concurrency because they mostly
+consume local stored content and CPU/IO.

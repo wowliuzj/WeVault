@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -25,35 +26,58 @@ class TaskCancelled(RuntimeError):
     pass
 
 
+QUEUE_TASK_TYPES: dict[str, tuple[TaskType, ...]] = {
+    "fetch": (TaskType.FETCH_SOURCE_ARTICLES, TaskType.FETCH_ARTICLE_CONTENT),
+    "export": (TaskType.EXPORT_ARTICLES,),
+}
+
+
 def log(message: str) -> None:
     print(f"[worker] {datetime.now(UTC).isoformat()} {message}", flush=True)
 
 
-async def acquire_pending_task() -> UUID | None:
+def task_types_for_queue(queue: str) -> Sequence[TaskType] | None:
+    normalized = queue.strip().lower()
+    if normalized in {"", "all", "*"}:
+        return None
+    if normalized not in QUEUE_TASK_TYPES:
+        valid = ", ".join(["all", *QUEUE_TASK_TYPES])
+        raise ValueError(f"Unsupported worker queue '{queue}'. Valid queues: {valid}.")
+    return QUEUE_TASK_TYPES[normalized]
+
+
+async def acquire_pending_task(*, queue: str, worker_name: str) -> UUID | None:
+    task_types = task_types_for_queue(queue)
     async with AsyncSessionLocal() as db:
         async with db.begin():
-            result = await db.execute(
+            statement = (
                 select(CollectionTask)
                 .where(CollectionTask.status == TaskStatus.PENDING)
                 .order_by(CollectionTask.created_at.asc())
                 .limit(1)
                 .with_for_update(skip_locked=True)
             )
+            if task_types is not None:
+                statement = statement.where(CollectionTask.task_type.in_(task_types))
+
+            result = await db.execute(statement)
             task = result.scalar_one_or_none()
             if task is None:
-                log("no pending task")
                 return None
 
             task.status = TaskStatus.RUNNING
             task.started_at = datetime.now(UTC)
             task.finished_at = None
             task.error_message = None
-            log(f"acquired task={task.id} type={task.task_type.value}")
+            log(
+                f"worker={worker_name} queue={queue} "
+                f"acquired task={task.id} type={task.task_type.value}"
+            )
             return task.id
 
 
-async def run_task(task_id: UUID) -> None:
-    log(f"run task={task_id} started")
+async def run_task(task_id: UUID, *, worker_name: str) -> None:
+    log(f"worker={worker_name} run task={task_id} started")
     try:
         async with AsyncSessionLocal() as db:
             task = await load_task(db, task_id)
@@ -69,9 +93,9 @@ async def run_task(task_id: UUID) -> None:
                 task.status = TaskStatus.SUCCEEDED
                 task.finished_at = datetime.now(UTC)
                 await db.commit()
-                log(f"run task={task_id} succeeded")
+                log(f"worker={worker_name} run task={task_id} succeeded")
     except TaskCancelled:
-        log(f"run task={task_id} cancelled")
+        log(f"worker={worker_name} run task={task_id} cancelled")
         return
     except Exception as exc:
         async with AsyncSessionLocal() as db:
@@ -81,7 +105,7 @@ async def run_task(task_id: UUID) -> None:
                 task.error_message = str(exc) or "任务执行失败"
                 task.finished_at = datetime.now(UTC)
                 await db.commit()
-                log(f"run task={task_id} failed error={task.error_message}")
+                log(f"worker={worker_name} run task={task_id} failed error={task.error_message}")
 
 
 async def load_task(db: AsyncSession, task_id: UUID) -> CollectionTask:
@@ -392,11 +416,38 @@ async def upsert_article(
         log(f"cover cache failed article={article.id} title={article.title}")
 
 
-async def run_worker_loop(poll_interval: float) -> None:
+async def run_worker_slot(worker_name: str, *, poll_interval: float, queue: str) -> None:
+    idle_count = 0
     while True:
-        task_id = await acquire_pending_task()
+        task_id = await acquire_pending_task(queue=queue, worker_name=worker_name)
         if task_id is None:
+            idle_count += 1
+            if idle_count == 1 or idle_count % 30 == 0:
+                log(f"worker={worker_name} queue={queue} no pending task")
             await asyncio.sleep(poll_interval)
             continue
 
-        await run_task(task_id)
+        idle_count = 0
+        await run_task(task_id, worker_name=worker_name)
+
+
+async def run_worker_loop(
+    poll_interval: float,
+    *,
+    concurrency: int = 1,
+    queue: str = "all",
+) -> None:
+    task_types_for_queue(queue)
+    worker_count = max(1, concurrency)
+    log(f"starting queue={queue} concurrency={worker_count} poll_interval={poll_interval}s")
+    slots = [
+        asyncio.create_task(
+            run_worker_slot(
+                f"{queue}-{slot}",
+                poll_interval=poll_interval,
+                queue=queue,
+            )
+        )
+        for slot in range(1, worker_count + 1)
+    ]
+    await asyncio.gather(*slots)

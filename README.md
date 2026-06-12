@@ -57,10 +57,22 @@ python -m app.worker
 ```
 
 The current worker uses PostgreSQL as a lightweight queue. It polls
-`collection_tasks` for `pending` rows, locks one task, marks it `running`, then
-updates it to `succeeded`, `failed`, or `cancelled`. The poll interval is
-controlled by `WORKER_POLL_INTERVAL_SECONDS` in `backend/.env` and defaults to
-`2` seconds.
+`collection_tasks` for `pending` rows, locks tasks with
+`SELECT ... FOR UPDATE SKIP LOCKED`, marks them `running`, then updates them to
+`succeeded`, `failed`, or `cancelled`. Multiple worker processes or concurrent
+slots can run at the same time without claiming the same task.
+
+Useful worker options:
+
+```bash
+python -m app.worker --queue all --concurrency 2
+python -m app.worker --queue fetch --concurrency 2
+python -m app.worker --queue export --concurrency 4
+```
+
+The poll interval, default queue, and default concurrency are controlled by
+`WORKER_POLL_INTERVAL_SECONDS`, `WORKER_QUEUE`, and `WORKER_CONCURRENCY` in
+`backend/.env`.
 
 For local debugging, the worker prints task lifecycle messages to the console,
 including whether a pending task was found, which task was selected, article
