@@ -594,6 +594,14 @@ h2 {
   margin-bottom: 16px;
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .panel-header p {
   margin-top: 4px;
   font-size: 13px;

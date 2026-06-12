@@ -47,6 +47,7 @@ class ArticleResponse(BaseModel):
     original_url: str
     publish_time: datetime | None = None
     content_status: str
+    deleted_at: datetime | None = None
     source: ArticleSourceResponse
     created_at: datetime
     updated_at: datetime
@@ -99,6 +100,7 @@ def serialize_article(article: Article, source: WechatSource) -> ArticleResponse
         original_url=article.original_url,
         publish_time=article.publish_time,
         content_status=article.content_status.value,
+        deleted_at=article.deleted_at,
         source=ArticleSourceResponse(
             id=str(source.id),
             name=source.name,
@@ -138,12 +140,16 @@ async def validate_user_articles(
     db: AsyncSession,
     user: User,
     article_ids: list[UUID],
+    *,
+    deleted: bool = False,
 ) -> list[Article]:
+    deleted_condition = Article.deleted_at.is_not(None) if deleted else Article.deleted_at.is_(None)
     result = await db.execute(
-        select(Article).where(
+        select(Article).join(WechatSource, Article.source_id == WechatSource.id).where(
             Article.user_id == user.id,
             Article.id.in_(article_ids),
-            Article.deleted_at.is_(None),
+            deleted_condition,
+            WechatSource.deleted_at.is_(None),
         )
     )
     articles = list(result.scalars().all())
@@ -159,6 +165,7 @@ async def validate_user_articles(
 async def list_articles(
     keyword: str | None = Query(default=None, max_length=120),
     source_id: UUID | None = None,
+    deleted: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=5, le=100),
     current_user: User = Depends(get_current_user),
@@ -166,7 +173,7 @@ async def list_articles(
 ) -> ArticleListResponse:
     conditions = [
         Article.user_id == current_user.id,
-        Article.deleted_at.is_(None),
+        Article.deleted_at.is_not(None) if deleted else Article.deleted_at.is_(None),
         WechatSource.deleted_at.is_(None),
     ]
     if source_id is not None:
@@ -194,7 +201,12 @@ async def list_articles(
         select(Article, WechatSource)
         .join(WechatSource, Article.source_id == WechatSource.id)
         .where(*conditions)
-        .order_by(Article.publish_time.desc().nullslast(), Article.created_at.desc())
+        .order_by(
+            Article.deleted_at.desc().nullslast()
+            if deleted
+            else Article.publish_time.desc().nullslast(),
+            Article.created_at.desc(),
+        )
         .offset(offset)
         .limit(page_size)
     )
@@ -329,13 +341,41 @@ async def delete_articles(
     return {"deleted": len(articles)}
 
 
+@router.post("/batch-restore")
+async def restore_articles(
+    payload: ArticleBatchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    articles = await validate_user_articles(db, current_user, payload.article_ids, deleted=True)
+    for article in articles:
+        article.deleted_at = None
+    await db.commit()
+    return {"restored": len(articles)}
+
+
+@router.post("/{article_id}/restore", response_model=ArticleResponse)
+async def restore_article(
+    article_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ArticleResponse:
+    articles = await validate_user_articles(db, current_user, [article_id], deleted=True)
+    article = articles[0]
+    article.deleted_at = None
+    await db.commit()
+    await db.refresh(article)
+    _, source = await get_user_article(db, current_user, article.id)
+    return serialize_article(article, source)
+
+
 @router.get("/{article_id}/cover")
 async def get_cached_article_cover(
     article_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     result = await db.execute(
-        select(Article).where(Article.id == article_id, Article.deleted_at.is_(None))
+        select(Article).where(Article.id == article_id)
     )
     article = result.scalar_one_or_none()
     if article is None:
@@ -365,7 +405,7 @@ async def get_cached_article_asset(
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     result = await db.execute(
-        select(Article).where(Article.id == article_id, Article.deleted_at.is_(None))
+        select(Article).where(Article.id == article_id)
     )
     article = result.scalar_one_or_none()
     if article is None:

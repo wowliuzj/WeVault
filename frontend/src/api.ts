@@ -100,6 +100,7 @@ export type Article = {
   original_url: string;
   publish_time: string | null;
   content_status: "pending" | "running" | "fetched" | "failed";
+  deleted_at: string | null;
   source: ArticleSource;
   created_at: string;
   updated_at: string;

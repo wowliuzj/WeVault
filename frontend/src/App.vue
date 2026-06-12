@@ -26,6 +26,7 @@ type AuthMode = "login" | "register";
 type ToastKind = "success" | "error";
 type SourceViewMode = "list" | "grid";
 type SourceModalMode = "search" | "url" | "task" | null;
+type ArticleLibraryMode = "active" | "trash";
 
 const views: Array<{ id: ViewId; label: string; icon: string; title: string; subtitle: string }> = [
   {
@@ -143,7 +144,9 @@ const articlePageSize = ref(20);
 const articleKeyword = ref("");
 const articleSourceId = ref("");
 const selectedArticleIds = ref<Set<string>>(new Set());
+const articleMode = ref<ArticleLibraryMode>("active");
 const articleBatchDeleting = ref(false);
+const articleBatchRestoring = ref(false);
 const articleDetail = ref<ArticleDetail | null>(null);
 const articleViewLoadingId = ref("");
 const instantArticleTask = ref<{
@@ -226,7 +229,9 @@ const selectedArticles = computed(() =>
   articles.value.filter((article) => selectedArticleIds.value.has(article.id)),
 );
 const hasSelectedArticles = computed(() => selectedArticleIds.value.size > 0);
+const isArticleTrashMode = computed(() => articleMode.value === "trash");
 const canBatchFetchContent = computed(() =>
+  !isArticleTrashMode.value &&
   selectedArticles.value.some((article) =>
     ["pending", "failed"].includes(article.content_status),
   ),
@@ -235,6 +240,12 @@ const allVisibleArticlesSelected = computed(
   () =>
     articles.value.length > 0 &&
     articles.value.every((article) => selectedArticleIds.value.has(article.id)),
+);
+const articleEmptyLabel = computed(() =>
+  isArticleTrashMode.value ? "回收箱里还没有文章" : "还没有文章",
+);
+const articleLoadingLabel = computed(() =>
+  isArticleTrashMode.value ? "正在读取回收箱" : "正在读取文章库",
 );
 
 function setSession(response: TokenResponse) {
@@ -528,6 +539,17 @@ function resetArticleFilters() {
   articleKeyword.value = "";
   articleSourceId.value = "";
   articlePage.value = 1;
+  clearArticleSelection();
+  void loadArticles();
+}
+
+function setArticleMode(mode: ArticleLibraryMode) {
+  if (articleMode.value === mode) {
+    return;
+  }
+  articleMode.value = mode;
+  articlePage.value = 1;
+  clearArticleSelection();
   void loadArticles();
 }
 
@@ -738,6 +760,10 @@ function closeArticleDetail() {
   articleDetail.value = null;
 }
 
+function viewOriginalArticle(article: Article) {
+  window.open(article.original_url, "_blank", "noopener,noreferrer");
+}
+
 async function deleteArticle(article: Article) {
   const confirmed = window.confirm(`删除文章「${article.title}」？`);
   if (!confirmed) {
@@ -791,6 +817,52 @@ async function deleteSelectedArticles() {
     showToast("error", error instanceof Error ? error.message : "批量删除文章失败");
   } finally {
     articleBatchDeleting.value = false;
+  }
+}
+
+async function restoreArticle(article: Article) {
+  articleOperatingId.value = article.id;
+  try {
+    await apiRequest<Article>(`/articles/${article.id}/restore`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    selectedArticleIds.value = new Set(
+      [...selectedArticleIds.value].filter((articleId) => articleId !== article.id),
+    );
+    showToast("success", "文章已恢复");
+    await loadArticles();
+    await loadDashboardArticles();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "恢复文章失败");
+  } finally {
+    articleOperatingId.value = "";
+  }
+}
+
+async function restoreSelectedArticles() {
+  const articleIds = [...selectedArticleIds.value];
+  if (articleIds.length === 0) {
+    return;
+  }
+
+  articleBatchRestoring.value = true;
+  try {
+    const response = await apiRequest<{ restored: number }>("/articles/batch-restore", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ article_ids: articleIds }),
+    });
+    selectedArticleIds.value = new Set();
+    showToast("success", `已恢复 ${response.restored} 篇文章`);
+    await loadArticles();
+    await loadDashboardArticles();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "批量恢复文章失败");
+  } finally {
+    articleBatchRestoring.value = false;
   }
 }
 
@@ -1012,6 +1084,7 @@ async function logout() {
   dashboardRecentArticles.value = [];
   articles.value = [];
   articleTotal.value = 0;
+  articleMode.value = "active";
   selectedArticleIds.value = new Set();
   stopInstantArticleTaskPolling();
   instantArticleTask.value = null;
@@ -1217,6 +1290,9 @@ async function loadArticles() {
     page: String(articlePage.value),
     page_size: String(articlePageSize.value),
   });
+  if (isArticleTrashMode.value) {
+    params.set("deleted", "true");
+  }
   if (articleKeyword.value.trim()) {
     params.set("keyword", articleKeyword.value.trim());
   }
@@ -1239,7 +1315,14 @@ async function loadArticles() {
       articlePage.value = articlePageCount.value;
     }
   } catch (error) {
-    showToast("error", error instanceof Error ? error.message : "读取文章库失败");
+    showToast(
+      "error",
+      error instanceof Error
+        ? error.message
+        : isArticleTrashMode.value
+          ? "读取回收箱失败"
+          : "读取文章库失败",
+    );
   } finally {
     articleLoading.value = false;
   }
@@ -1893,12 +1976,36 @@ onBeforeUnmount(() => {
         <section class="panel">
           <div class="panel-header">
             <div>
-              <h2>文章库</h2>
-              <p>文章列表与正文抓取分离，方便用户控制采集范围。</p>
+              <h2>{{ isArticleTrashMode ? "文章回收箱" : "文章库" }}</h2>
+              <p>
+                {{
+                  isArticleTrashMode
+                    ? "查看已删除文章，可按标题或公众号搜索并恢复。"
+                    : "文章列表与正文抓取分离，方便用户控制采集范围。"
+                }}
+              </p>
             </div>
-            <button class="ghost-button" type="button" :disabled="articleLoading" @click="loadArticles">
-              {{ articleLoading ? "刷新中..." : "刷新" }}
-            </button>
+            <div class="panel-actions">
+              <div class="segmented-control">
+                <button
+                  type="button"
+                  :class="{ active: articleMode === 'active' }"
+                  @click="setArticleMode('active')"
+                >
+                  文章库
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: articleMode === 'trash' }"
+                  @click="setArticleMode('trash')"
+                >
+                  回收箱
+                </button>
+              </div>
+              <button class="ghost-button" type="button" :disabled="articleLoading" @click="loadArticles">
+                {{ articleLoading ? "刷新中..." : "刷新" }}
+              </button>
+            </div>
           </div>
           <form class="filter-bar article-filter-bar" @submit.prevent="searchArticles">
             <input
@@ -1921,7 +2028,7 @@ onBeforeUnmount(() => {
           <div v-if="hasSelectedArticles" class="article-bulk-bar">
             <span>已选择 {{ selectedArticleIds.size }} 篇</span>
             <button
-              v-if="canBatchFetchContent"
+              v-if="!isArticleTrashMode && canBatchFetchContent"
               class="primary-button"
               type="button"
               @click="fetchSelectedArticles"
@@ -1929,6 +2036,16 @@ onBeforeUnmount(() => {
               抓取正文
             </button>
             <button
+              v-if="isArticleTrashMode"
+              class="primary-button"
+              type="button"
+              :disabled="articleBatchRestoring"
+              @click="restoreSelectedArticles"
+            >
+              {{ articleBatchRestoring ? "恢复中..." : "恢复文章" }}
+            </button>
+            <button
+              v-else
               class="link-button danger"
               type="button"
               :disabled="articleBatchDeleting"
@@ -1939,8 +2056,8 @@ onBeforeUnmount(() => {
             <button class="link-button" type="button" @click="clearArticleSelection">取消选择</button>
           </div>
 
-          <div v-if="articleLoading" class="empty-state">正在读取文章库</div>
-          <div v-else-if="articles.length === 0" class="empty-state">还没有文章</div>
+          <div v-if="articleLoading" class="empty-state">{{ articleLoadingLabel }}</div>
+          <div v-else-if="articles.length === 0" class="empty-state">{{ articleEmptyLabel }}</div>
           <template v-else>
             <div class="article-table-wrap">
               <table class="article-table">
@@ -1958,7 +2075,7 @@ onBeforeUnmount(() => {
                   <th>文章</th>
                   <th>公众号</th>
                   <th>发布时间</th>
-                  <th>正文</th>
+                  <th>{{ isArticleTrashMode ? "删除时间" : "正文" }}</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -2002,7 +2119,10 @@ onBeforeUnmount(() => {
                     </div>
                   </td>
                   <td>{{ formatDateTime(article.publish_time) }}</td>
-                  <td>
+                  <td v-if="isArticleTrashMode">
+                    {{ formatDateTime(article.deleted_at) }}
+                  </td>
+                  <td v-else>
                     <button
                       v-if="['pending', 'failed'].includes(article.content_status)"
 	                      class="link-button"
@@ -2017,6 +2137,20 @@ onBeforeUnmount(() => {
                   </td>
 	                  <td>
                     <div class="article-actions">
+                      <template v-if="isArticleTrashMode">
+                        <button class="link-button" type="button" @click="viewOriginalArticle(article)">
+                          查看
+                        </button>
+                        <button
+                          class="link-button"
+                          type="button"
+                          :disabled="articleOperatingId === article.id"
+                          @click="restoreArticle(article)"
+                        >
+                          恢复
+                        </button>
+                      </template>
+                      <template v-else>
                       <button
                         class="link-button"
                         type="button"
@@ -2041,6 +2175,7 @@ onBeforeUnmount(() => {
                       >
                         删除
                       </button>
+                      </template>
                     </div>
                   </td>
                 </tr>
@@ -2079,20 +2214,37 @@ onBeforeUnmount(() => {
                     <span>{{ article.source.name }}</span>
                     <small>{{ formatDateTime(article.publish_time) }}</small>
                   </div>
-                  <div class="article-mobile-status">
+                  <div v-if="isArticleTrashMode" class="article-mobile-status">
+                    <span class="tag muted">删除于 {{ formatDateTime(article.deleted_at) }}</span>
+                  </div>
+                  <div v-else class="article-mobile-status">
                     <span class="tag" :class="articleStatusTag(article.content_status)">
                       正文 {{ articleStatusLabel(article.content_status) }}
                     </span>
                   </div>
                   <div class="article-actions">
                     <button
-                      v-if="['pending', 'failed'].includes(article.content_status)"
+                      v-if="!isArticleTrashMode && ['pending', 'failed'].includes(article.content_status)"
                       class="link-button"
                       type="button"
                       @click="fetchArticle(article)"
                     >
                       抓取正文
                     </button>
+                    <template v-if="isArticleTrashMode">
+                      <button class="link-button" type="button" @click="viewOriginalArticle(article)">
+                        查看
+                      </button>
+                      <button
+                        class="link-button"
+                        type="button"
+                        :disabled="articleOperatingId === article.id"
+                        @click="restoreArticle(article)"
+                      >
+                        恢复
+                      </button>
+                    </template>
+                    <template v-else>
                     <button class="link-button" type="button" @click="refreshArticle(article)">
                       刷新
                     </button>
@@ -2107,6 +2259,7 @@ onBeforeUnmount(() => {
                     <button class="link-button danger" type="button" @click="deleteArticle(article)">
                       删除
                     </button>
+                    </template>
                   </div>
                 </div>
               </article>
