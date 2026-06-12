@@ -13,7 +13,7 @@ from starlette.responses import FileResponse, Response
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.article import Article, ArticleContent
-from app.models.enums import TaskStatus, TaskType
+from app.models.enums import FetchStatus, TaskStatus, TaskType
 from app.models.task import CollectionTask
 from app.models.user import User
 from app.models.wechat import WechatSource
@@ -57,6 +57,12 @@ class ArticleListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ArticleSummaryResponse(BaseModel):
+    total: int
+    content_fetched: int
+    recent: list[ArticleResponse]
 
 
 class ArticleDetailResponse(ArticleResponse):
@@ -200,6 +206,43 @@ async def list_articles(
     )
 
 
+@router.get("/summary", response_model=ArticleSummaryResponse)
+async def get_article_summary(
+    limit: int = Query(default=5, ge=1, le=20),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ArticleSummaryResponse:
+    conditions = [
+        Article.user_id == current_user.id,
+        Article.deleted_at.is_(None),
+        WechatSource.deleted_at.is_(None),
+    ]
+    total_result = await db.execute(
+        select(func.count())
+        .select_from(Article)
+        .join(WechatSource, Article.source_id == WechatSource.id)
+        .where(*conditions)
+    )
+    fetched_result = await db.execute(
+        select(func.count())
+        .select_from(Article)
+        .join(WechatSource, Article.source_id == WechatSource.id)
+        .where(*conditions, Article.content_status == FetchStatus.FETCHED)
+    )
+    recent_rows = await db.execute(
+        select(Article, WechatSource)
+        .join(WechatSource, Article.source_id == WechatSource.id)
+        .where(*conditions)
+        .order_by(Article.publish_time.desc().nullslast(), Article.created_at.desc())
+        .limit(limit)
+    )
+    return ArticleSummaryResponse(
+        total=int(total_result.scalar_one()),
+        content_fetched=int(fetched_result.scalar_one()),
+        recent=[serialize_article(article, source) for article, source in recent_rows.all()],
+    )
+
+
 @router.get("/cover")
 async def proxy_article_cover(url: str) -> Response:
     cover_url = normalize_image_url(url)
@@ -270,6 +313,20 @@ async def fetch_article_content(
         TaskType.FETCH_ARTICLE_CONTENT,
     )
     return {"status": "queued", "task_id": str(task.id)}
+
+
+@router.post("/batch-delete")
+async def delete_articles(
+    payload: ArticleBatchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    articles = await validate_user_articles(db, current_user, payload.article_ids)
+    deleted_at = datetime.now(UTC)
+    for article in articles:
+        article.deleted_at = deleted_at
+    await db.commit()
+    return {"deleted": len(articles)}
 
 
 @router.get("/{article_id}/cover")

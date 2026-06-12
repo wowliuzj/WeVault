@@ -4,10 +4,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   apiRequest,
   getArticleCoverUrl,
+  getApiUrl,
   getAuthHeaders,
   getSourceAvatarUrl,
   type Article,
+  type ArticleDetail,
   type ArticleListResponse,
+  type ArticleSummaryResponse,
   type CollectionTask,
   type SourceSearchItem,
   type SourceSearchResponse,
@@ -76,33 +79,6 @@ const views: Array<{ id: ViewId; label: string; icon: string; title: string; sub
   },
 ];
 
-const recentArticles = [
-  {
-    title: "AI 产品经理的长期主义",
-    source: "产品笔记",
-    publishedAt: "2026-06-09",
-    contentStatus: "已抓取",
-    contentTag: "success",
-    action: "导出",
-  },
-  {
-    title: "一文讲清企业知识库落地",
-    source: "技术观察站",
-    publishedAt: "2026-06-08",
-    contentStatus: "待抓取",
-    contentTag: "warning",
-    action: "抓取",
-  },
-  {
-    title: "内容归档系统的边界",
-    source: "SaaS 方法论",
-    publishedAt: "2026-06-07",
-    contentStatus: "抓取中",
-    contentTag: "progress",
-    action: "查看",
-  },
-];
-
 const exports = [
   { name: "产品笔记精选 24 篇", note: "PDF · 保留文本 · 28.4 MB" },
   { name: "企业知识库专题", note: "DOCX · 16 篇文章 · 12.1 MB" },
@@ -154,6 +130,10 @@ const taskSubmitting = ref(false);
 const tasks = ref<CollectionTask[]>([]);
 const taskPage = ref(1);
 const taskPageSize = ref(10);
+const dashboardArticleLoading = ref(false);
+const dashboardArticleTotal = ref(0);
+const dashboardContentFetched = ref(0);
+const dashboardRecentArticles = ref<Article[]>([]);
 const articleLoading = ref(false);
 const articleOperatingId = ref("");
 const articles = ref<Article[]>([]);
@@ -163,6 +143,9 @@ const articlePageSize = ref(20);
 const articleKeyword = ref("");
 const articleSourceId = ref("");
 const selectedArticleIds = ref<Set<string>>(new Set());
+const articleBatchDeleting = ref(false);
+const articleDetail = ref<ArticleDetail | null>(null);
+const articleViewLoadingId = ref("");
 const instantArticleTask = ref<{
   taskId: string;
   articleTitle: string;
@@ -207,6 +190,10 @@ const wechatStatusNote = computed(() => {
 });
 const wechatExpiresLabel = computed(() => formatDateTime(wechatAccount.value?.expires_at));
 const sourceModalVisible = computed(() => sourceModalMode.value !== null);
+const articleDetailHtml = computed(() => {
+  const html = articleDetail.value?.content_clean_html || "";
+  return html.replace(/(["'])\/api\/v1\//g, `$1${getApiUrl("/api/v1/")}`);
+});
 const hasValidWechatAuthorization = computed(
   () => Boolean(wechatAccount.value) && wechatAccount.value?.token_status === "valid",
 );
@@ -271,6 +258,7 @@ async function loadCurrentUser() {
     });
     await loadWechatAccount();
     await loadSources();
+    await loadDashboardArticles();
     await loadArticles();
     await loadTasks();
   } catch {
@@ -302,6 +290,9 @@ async function submitAuth() {
     });
     setSession(response);
     await loadWechatAccount();
+    await loadSources();
+    await loadDashboardArticles();
+    await loadTasks();
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "登录失败";
   } finally {
@@ -329,6 +320,11 @@ function setView(viewId: ViewId) {
     void loadArticles();
   }
   if (viewId === "tasks") {
+    void loadTasks();
+  }
+  if (viewId === "dashboard") {
+    void loadDashboardArticles();
+    void loadSources();
     void loadTasks();
   }
 }
@@ -706,6 +702,7 @@ async function refreshArticle(article: Article) {
       item.id === updatedArticle.id ? updatedArticle : item,
     );
     showToast("success", "文章信息已刷新");
+    await loadDashboardArticles();
   } catch (error) {
     showToast("error", error instanceof Error ? error.message : "刷新文章失败");
   } finally {
@@ -713,8 +710,32 @@ async function refreshArticle(article: Article) {
   }
 }
 
-function viewArticle(article: Article) {
-  window.open(article.original_url, "_blank", "noopener,noreferrer");
+async function viewArticle(article: Article) {
+  if (article.content_status !== "fetched") {
+    window.open(article.original_url, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  articleViewLoadingId.value = article.id;
+  try {
+    const detail = await apiRequest<ArticleDetail>(`/articles/${article.id}`, {
+      headers: authHeaders(),
+    });
+    if (!detail.content_clean_html && !detail.content_plain_text) {
+      showToast("error", "本地正文为空，已打开原文");
+      window.open(article.original_url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    articleDetail.value = detail;
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "读取正文失败");
+  } finally {
+    articleViewLoadingId.value = "";
+  }
+}
+
+function closeArticleDetail() {
+  articleDetail.value = null;
 }
 
 async function deleteArticle(article: Article) {
@@ -734,11 +755,42 @@ async function deleteArticle(article: Article) {
     );
     showToast("success", "文章已删除");
     await loadArticles();
+    await loadDashboardArticles();
     await loadSources();
   } catch (error) {
     showToast("error", error instanceof Error ? error.message : "删除文章失败");
   } finally {
     articleOperatingId.value = "";
+  }
+}
+
+async function deleteSelectedArticles() {
+  const articleIds = [...selectedArticleIds.value];
+  if (articleIds.length === 0) {
+    return;
+  }
+
+  const confirmed = window.confirm(`删除选中的 ${articleIds.length} 篇文章？`);
+  if (!confirmed) {
+    return;
+  }
+
+  articleBatchDeleting.value = true;
+  try {
+    const response = await apiRequest<{ deleted: number }>("/articles/batch-delete", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ article_ids: articleIds }),
+    });
+    selectedArticleIds.value = new Set();
+    showToast("success", `已删除 ${response.deleted} 篇文章`);
+    await loadArticles();
+    await loadDashboardArticles();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "批量删除文章失败");
+  } finally {
+    articleBatchDeleting.value = false;
   }
 }
 
@@ -830,12 +882,14 @@ async function pollInstantArticleTask(taskId: string) {
       instantArticleTask.value = null;
       showToast("success", "抓取完成");
       await loadArticles();
+      await loadDashboardArticles();
       await loadTasks();
     } else if (["failed", "cancelled"].includes(task.status)) {
       stopInstantArticleTaskPolling();
       instantArticleTask.value = null;
       showToast("error", task.error_message || "抓取失败");
       await loadArticles();
+      await loadDashboardArticles();
       await loadTasks();
     }
   } catch (error) {
@@ -953,6 +1007,9 @@ async function logout() {
   currentUser.value = null;
   wechatAccount.value = null;
   sources.value = [];
+  dashboardArticleTotal.value = 0;
+  dashboardContentFetched.value = 0;
+  dashboardRecentArticles.value = [];
   articles.value = [];
   articleTotal.value = 0;
   selectedArticleIds.value = new Set();
@@ -1121,6 +1178,29 @@ async function loadSources() {
     showToast("error", sourceError.value);
   } finally {
     sourceLoading.value = false;
+  }
+}
+
+async function loadDashboardArticles() {
+  if (!token.value) {
+    dashboardArticleTotal.value = 0;
+    dashboardContentFetched.value = 0;
+    dashboardRecentArticles.value = [];
+    return;
+  }
+
+  dashboardArticleLoading.value = true;
+  try {
+    const response = await apiRequest<ArticleSummaryResponse>("/articles/summary?limit=5", {
+      headers: authHeaders(),
+    });
+    dashboardArticleTotal.value = response.total;
+    dashboardContentFetched.value = response.content_fetched;
+    dashboardRecentArticles.value = response.recent;
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "读取首页文章数据失败");
+  } finally {
+    dashboardArticleLoading.value = false;
   }
 }
 
@@ -1393,8 +1473,10 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric">
             <div class="metric-label">文章库</div>
-            <div class="metric-value">1,284</div>
-            <div class="metric-note">已抓正文 426 篇</div>
+            <div class="metric-value">
+              {{ dashboardArticleLoading ? "..." : dashboardArticleTotal }}
+            </div>
+            <div class="metric-note">已抓正文 {{ dashboardContentFetched }} 篇</div>
           </article>
           <article class="metric">
             <div class="metric-label">导出中心</div>
@@ -1410,7 +1492,7 @@ onBeforeUnmount(() => {
                 <h2>最近文章</h2>
                 <p>列表同步后，用户可以选择需要抓正文的文章。</p>
               </div>
-              <button class="small-button" type="button">批量抓取</button>
+              <button class="small-button" type="button" @click="setView('articles')">进入文章库</button>
             </div>
             <div class="table-wrap">
               <table>
@@ -1423,11 +1505,21 @@ onBeforeUnmount(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="article in recentArticles" :key="article.title">
+                  <tr v-if="dashboardArticleLoading">
+                    <td colspan="4">正在读取最近文章</td>
+                  </tr>
+                  <tr v-else-if="dashboardRecentArticles.length === 0">
+                    <td colspan="4">还没有文章</td>
+                  </tr>
+                  <tr v-for="article in dashboardRecentArticles" v-else :key="article.id">
                     <td>{{ article.title }}</td>
-                    <td>{{ article.source }}</td>
-                    <td>{{ article.publishedAt }}</td>
-                    <td><span class="tag" :class="article.contentTag">{{ article.contentStatus }}</span></td>
+                    <td>{{ article.source.name }}</td>
+                    <td>{{ formatDateTime(article.publish_time) }}</td>
+                    <td>
+                      <span class="tag" :class="articleStatusTag(article.content_status)">
+                        {{ articleStatusLabel(article.content_status) }}
+                      </span>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -1836,6 +1928,14 @@ onBeforeUnmount(() => {
             >
               抓取正文
             </button>
+            <button
+              class="link-button danger"
+              type="button"
+              :disabled="articleBatchDeleting"
+              @click="deleteSelectedArticles"
+            >
+              {{ articleBatchDeleting ? "删除中..." : "删除文章" }}
+            </button>
             <button class="link-button" type="button" @click="clearArticleSelection">取消选择</button>
           </div>
 
@@ -1925,8 +2025,13 @@ onBeforeUnmount(() => {
                       >
                         刷新
                       </button>
-                      <button class="link-button" type="button" @click="viewArticle(article)">
-                        查看
+                      <button
+                        class="link-button"
+                        type="button"
+                        :disabled="articleViewLoadingId === article.id"
+                        @click="viewArticle(article)"
+                      >
+                        {{ articleViewLoadingId === article.id ? "读取中..." : "查看" }}
                       </button>
                       <button
                         class="link-button danger"
@@ -1991,8 +2096,13 @@ onBeforeUnmount(() => {
                     <button class="link-button" type="button" @click="refreshArticle(article)">
                       刷新
                     </button>
-                    <button class="link-button" type="button" @click="viewArticle(article)">
-                      查看
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="articleViewLoadingId === article.id"
+                      @click="viewArticle(article)"
+                    >
+                      {{ articleViewLoadingId === article.id ? "读取中..." : "查看" }}
                     </button>
                     <button class="link-button danger" type="button" @click="deleteArticle(article)">
                       删除
@@ -2470,6 +2580,41 @@ onBeforeUnmount(() => {
             <span>{{ sourceArticleUrl }}</span>
           </div>
         </template>
+      </section>
+    </div>
+
+    <div v-if="articleDetail" class="modal-backdrop">
+      <section
+        class="modal-dialog article-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="article-detail-title"
+      >
+        <button class="modal-close" type="button" aria-label="关闭正文" @click="closeArticleDetail">
+          ×
+        </button>
+        <div class="modal-header article-detail-header">
+          <div>
+            <h2 id="article-detail-title">{{ articleDetail.title }}</h2>
+            <p>
+              {{ articleDetail.source.name }}
+              <span v-if="articleDetail.publish_time"> · {{ formatDateTime(articleDetail.publish_time) }}</span>
+              <span v-if="articleDetail.content_fetched_at">
+                · 抓取于 {{ formatDateTime(articleDetail.content_fetched_at) }}
+              </span>
+            </p>
+          </div>
+          <a
+            class="small-button"
+            :href="articleDetail.original_url"
+            target="_blank"
+            rel="noreferrer"
+          >
+            原文
+          </a>
+        </div>
+        <article v-if="articleDetailHtml" class="article-detail-body" v-html="articleDetailHtml"></article>
+        <pre v-else class="article-detail-text">{{ articleDetail.content_plain_text }}</pre>
       </section>
     </div>
 

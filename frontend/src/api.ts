@@ -119,6 +119,12 @@ export type ArticleListResponse = {
   page_size: number;
 };
 
+export type ArticleSummaryResponse = {
+  total: number;
+  content_fetched: number;
+  recent: Article[];
+};
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
@@ -143,7 +149,7 @@ export function getAuthHeaders(token: string): HeadersInit {
   };
 }
 
-function getApiUrl(path: string): string {
+export function getApiUrl(path: string): string {
   const baseUrl = new URL(API_BASE_URL);
   return `${baseUrl.origin}${path}`;
 }
