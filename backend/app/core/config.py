@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
     asset_storage_dir: str = "storage"
+    export_file_ttl_days: int = 14
+    export_cleanup_interval_seconds: int = 60 * 60 * 6
     worker_poll_interval_seconds: float = 2.0
     worker_concurrency: int = 1
     worker_queue: str = "all"

@@ -3,6 +3,8 @@ import asyncio
 import contextlib
 
 from app.core.config import settings
+from app.db.session import AsyncSessionLocal
+from app.services.export_cleanup import cleanup_expired_exports
 from app.services.task_worker import run_worker_loop
 
 
@@ -26,11 +28,34 @@ def parse_args() -> argparse.Namespace:
         choices=("all", "fetch", "export"),
         help="Task queue to consume.",
     )
+    parser.add_argument(
+        "--cleanup-exports",
+        action="store_true",
+        help="Delete expired export files and export job records, then exit.",
+    )
     return parser.parse_args()
+
+
+async def cleanup_exports_once() -> None:
+    async with AsyncSessionLocal() as db:
+        result = await cleanup_expired_exports(db)
+    print(
+        "[worker] export cleanup "
+        f"cutoff={result.cutoff.isoformat()} "
+        f"deleted_jobs={result.deleted_jobs} "
+        f"deleted_files={result.deleted_files} "
+        f"deleted_tasks={result.deleted_tasks} "
+        f"deleted_dirs={result.deleted_dirs}",
+        flush=True,
+    )
 
 
 async def main() -> None:
     args = parse_args()
+    if args.cleanup_exports:
+        await cleanup_exports_once()
+        return
+
     print(
         "[worker] boot "
         f"queue={args.queue} concurrency={max(1, args.concurrency)} "

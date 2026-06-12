@@ -1,6 +1,6 @@
 # WeVault
 
-WeVault is a WeChat Official Account content vault for collecting, preserving, and exporting articles and comments.
+WeVault is a WeChat Official Account content vault for collecting, preserving, and exporting articles.
 
 The first version focuses on a small, reliable loop:
 
@@ -9,8 +9,7 @@ The first version focuses on a small, reliable loop:
 - Public account source management
 - Article list collection
 - Selected article content collection
-- Article comment collection
-- Long-term storage of HTML, Markdown, plain text, assets, and comments
+- Long-term storage of HTML, Markdown, plain text, and assets
 - Text-preserving export to PDF, DOCX, and Markdown
 
 ## Project Structure
@@ -79,6 +78,20 @@ including whether a pending task was found, which task was selected, article
 list page requests, saved article counts, cancellation, success, and failure
 details.
 
+Export jobs are also handled by the worker. The export pipeline supports PDF,
+DOCX, and Markdown; selecting multiple formats creates one ZIP bundle for
+download. If an article's正文 has not been fetched yet, the export task fetches it
+before generating the file. Generated files are stored under `storage/exports/`
+and downloaded from the Export Center. Export files and export job records expire
+after `EXPORT_FILE_TTL_DAYS` days, defaulting to 14 days; the worker checks for
+expired exports every `EXPORT_CLEANUP_INTERVAL_SECONDS` seconds.
+
+Manual export cleanup:
+
+```bash
+python -m app.worker --cleanup-exports
+```
+
 ## Planned Stack
 
 - Frontend: Vue 3, TypeScript, Vite, Naive UI
@@ -91,4 +104,6 @@ details.
 
 ## MVP Scope
 
-Version 1 intentionally skips workspace collaboration, NotebookLM integration, and AI analysis. Those features can be added after the collection, storage, and export pipeline is stable.
+Version 1 intentionally skips comment collection, global settings, workspace
+collaboration, NotebookLM integration, and AI analysis. Those features can be
+added after the collection, storage, and export pipeline is stable.

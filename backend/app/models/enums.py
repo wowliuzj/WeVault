@@ -52,7 +52,6 @@ class TaskStatus(StrEnum):
 class TaskType(StrEnum):
     FETCH_SOURCE_ARTICLES = "fetch_source_articles"
     FETCH_ARTICLE_CONTENT = "fetch_article_content"
-    FETCH_ARTICLE_COMMENTS = "fetch_article_comments"
     EXPORT_ARTICLES = "export_articles"
 
 

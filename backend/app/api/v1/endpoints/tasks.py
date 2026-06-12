@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -35,7 +35,9 @@ class TaskResponse(BaseModel):
 
 class CreateSourceArticleTaskRequest(BaseModel):
     source_id: UUID
-    range: Literal["7d", "30d", "90d", "all"] = "7d"
+    range: Literal["7d", "30d", "90d", "custom", "all"] = "7d"
+    start_date: date | None = None
+    end_date: date | None = None
     limit: Literal[0, 30, 50, 100] = 50
     fetch_content: bool = False
     skip_existing: bool = True
@@ -61,7 +63,12 @@ def task_note(task: CollectionTask, source_name: str | None = None) -> str:
         "30d": "最近 30 天",
         "90d": "最近 90 天",
         "all": "全部",
+        "custom": "自定义",
     }.get(payload.get("range"), "最近 7 天")
+    if payload.get("range") == "custom":
+        start_date = payload.get("start_date") or "未设置"
+        end_date = payload.get("end_date") or "未设置"
+        range_label = f"{start_date} 至 {end_date}"
     limit = payload.get("limit", 50)
     limit_label = "不设限" if limit == 0 else f"最多 {limit} 篇"
     content_label = "含正文" if payload.get("fetch_content") else "仅列表"
@@ -144,6 +151,18 @@ async def create_source_article_task(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> TaskResponse:
+    if payload.range == "custom":
+        if payload.start_date is None or payload.end_date is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="自定义时间范围需要开始日期和结束日期。",
+            )
+        if payload.start_date > payload.end_date:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="开始日期不能晚于结束日期。",
+            )
+
     source = await get_user_source(db, current_user, payload.source_id)
     task_payload = {
         "source_id": str(source.id),
@@ -153,6 +172,9 @@ async def create_source_article_task(
         "skip_existing": payload.skip_existing,
         "run_mode": "immediate",
     }
+    if payload.range == "custom":
+        task_payload["start_date"] = payload.start_date.isoformat() if payload.start_date else None
+        task_payload["end_date"] = payload.end_date.isoformat() if payload.end_date else None
     task = CollectionTask(
         user_id=current_user.id,
         task_type=TaskType.FETCH_SOURCE_ARTICLES,

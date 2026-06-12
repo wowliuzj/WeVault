@@ -51,17 +51,12 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Enum(FetchStatus, name="article_content_status", values_callable=enum_values),
         default=FetchStatus.PENDING,
     )
-    comment_status: Mapped[FetchStatus] = mapped_column(
-        Enum(FetchStatus, name="article_comment_status", values_callable=enum_values),
-        default=FetchStatus.PENDING,
-    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
 
     user = relationship("User", back_populates="articles")
     source = relationship("WechatSource", back_populates="articles")
     content = relationship("ArticleContent", back_populates="article", uselist=False)
-    comments = relationship("ArticleComment", back_populates="article")
 
 
 class ArticleContent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -81,31 +76,3 @@ class ArticleContent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     article = relationship("Article", back_populates="content")
-
-
-class ArticleComment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "article_comments"
-    __table_args__ = (
-        UniqueConstraint(
-            "article_id",
-            "wechat_comment_id",
-            name="uq_article_comments_article_wechat_id",
-        ),
-    )
-
-    user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
-    article_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True),
-        ForeignKey("articles.id"),
-        index=True,
-    )
-    wechat_comment_id: Mapped[str] = mapped_column(String(160), index=True)
-    nickname: Mapped[str | None] = mapped_column(String(120))
-    avatar_url: Mapped[str | None] = mapped_column(Text)
-    content: Mapped[str] = mapped_column(Text)
-    like_count: Mapped[int] = mapped_column(default=0)
-    reply_count: Mapped[int] = mapped_column(default=0)
-    publish_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
-    raw_data: Mapped[dict | None] = mapped_column(JSONB)
-
-    article = relationship("Article", back_populates="comments")

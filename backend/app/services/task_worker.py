@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -10,14 +10,18 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.session import AsyncSessionLocal
-from app.models.article import Article
+from app.models.article import Article, ArticleContent
 from app.models.enums import FetchStatus, TaskStatus, TaskType
+from app.models.export import ExportJob
 from app.models.task import CollectionTask
 from app.models.user import User
 from app.models.wechat import WechatSource
 from app.services.article_assets import cache_article_cover
 from app.services.article_fetcher import fetch_article_content
+from app.services.export_cleanup import cleanup_expired_exports
+from app.services.exporter import run_export_job
 from app.services.sources import get_active_authorized_session
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
 
@@ -85,6 +89,8 @@ async def run_task(task_id: UUID, *, worker_name: str) -> None:
                 await fetch_source_articles(db, task)
             elif task.task_type == TaskType.FETCH_ARTICLE_CONTENT:
                 await fetch_article_batch(db, task)
+            elif task.task_type == TaskType.EXPORT_ARTICLES:
+                await export_articles(db, task)
             else:
                 raise RuntimeError(f"暂不支持的任务类型：{task.task_type.value}")
 
@@ -104,6 +110,7 @@ async def run_task(task_id: UUID, *, worker_name: str) -> None:
                 task.status = TaskStatus.FAILED
                 task.error_message = str(exc) or "任务执行失败"
                 task.finished_at = datetime.now(UTC)
+                await sync_export_failure(db, task, task.error_message)
                 await db.commit()
                 log(f"worker={worker_name} run task={task_id} failed error={task.error_message}")
 
@@ -121,12 +128,28 @@ async def ensure_not_cancelled(db: AsyncSession, task: CollectionTask) -> None:
         raise TaskCancelled()
 
 
-def task_cutoff(payload: dict[str, Any]) -> datetime | None:
+def parse_payload_date(value: Any, *, end_of_day: bool = False) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed_date = datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
+    parsed_time = time.max if end_of_day else time.min
+    return datetime.combine(parsed_date, parsed_time, tzinfo=UTC)
+
+
+def task_date_bounds(payload: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
     value = payload.get("range", "7d")
+    if value == "custom":
+        return (
+            parse_payload_date(payload.get("start_date")),
+            parse_payload_date(payload.get("end_date"), end_of_day=True),
+        )
     days = {"7d": 7, "30d": 30, "90d": 90}.get(value)
     if days is None:
-        return None
-    return datetime.now(UTC) - timedelta(days=days)
+        return None, None
+    return datetime.now(UTC) - timedelta(days=days), None
 
 
 def normalize_article_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -170,11 +193,12 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
         "fetch_source_articles "
         f"task={task.id} source={source.id} name={source.name} "
         f"account={account.nickname} range={payload.get('range', '7d')} "
+        f"start_date={payload.get('start_date')} end_date={payload.get('end_date')} "
         f"limit={int(payload.get('limit') or 0)} "
         f"fetch_content={bool(payload.get('fetch_content'))}"
     )
     headers = {**MP_HEADERS, "Cookie": wechat_login_manager._cookie_header(cookies)}
-    cutoff = task_cutoff(payload)
+    start_at, end_at = task_date_bounds(payload)
     limit = int(payload.get("limit") or 0)
     skip_existing = bool(payload.get("skip_existing", True))
     page_size = 5
@@ -236,8 +260,10 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                 await ensure_not_cancelled(db, task)
                 article_data = normalize_article_item(raw_item)
                 publish_time = article_data["publish_time"]
-                if cutoff and publish_time and publish_time < cutoff:
+                if start_at and publish_time and publish_time < start_at:
                     stop_for_cutoff = True
+                    continue
+                if end_at and publish_time and publish_time > end_at:
                     continue
                 if limit and saved_count >= limit:
                     break
@@ -290,16 +316,15 @@ async def load_source(db: AsyncSession, user_id: UUID, source_id: UUID) -> Wecha
     return source
 
 
-async def load_task_articles(db: AsyncSession, task: CollectionTask) -> list[Article]:
-    payload = task.payload or {}
-    article_ids = payload.get("article_ids")
-    if not isinstance(article_ids, list) or not article_ids:
-        raise RuntimeError("任务缺少 article_ids。")
-
+async def load_articles_by_ids(
+    db: AsyncSession,
+    user_id: UUID,
+    article_ids: list[str],
+) -> list[Article]:
     ids = [UUID(str(article_id)) for article_id in article_ids]
     result = await db.execute(
         select(Article).where(
-            Article.user_id == task.user_id,
+            Article.user_id == user_id,
             Article.id.in_(ids),
         )
     )
@@ -308,6 +333,18 @@ async def load_task_articles(db: AsyncSession, task: CollectionTask) -> list[Art
         raise RuntimeError("部分文章不存在。")
     article_by_id = {article.id: article for article in articles}
     return [article_by_id[article_id] for article_id in ids]
+
+
+async def load_task_articles(db: AsyncSession, task: CollectionTask) -> list[Article]:
+    payload = task.payload or {}
+    article_ids = payload.get("article_ids")
+    if not isinstance(article_ids, list) or not article_ids:
+        raise RuntimeError("任务缺少 article_ids。")
+    return await load_articles_by_ids(
+        db,
+        task.user_id,
+        [str(article_id) for article_id in article_ids],
+    )
 
 
 async def fetch_article_batch(
@@ -342,6 +379,79 @@ async def fetch_article_batch(
 
     if failures:
         raise RuntimeError("；".join(failures[:3]))
+
+
+async def load_export_job(db: AsyncSession, task: CollectionTask) -> ExportJob:
+    payload = task.payload or {}
+    export_job_id = payload.get("export_job_id")
+    if not export_job_id:
+        raise RuntimeError("任务缺少 export_job_id。")
+
+    result = await db.execute(
+        select(ExportJob).where(
+            ExportJob.id == UUID(str(export_job_id)),
+            ExportJob.user_id == task.user_id,
+        )
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise RuntimeError("导出任务不存在。")
+    return job
+
+
+async def export_articles(db: AsyncSession, task: CollectionTask) -> None:
+    job = await load_export_job(db, task)
+    user = await load_user(db, task.user_id)
+    try:
+        _, _, cookies, _ = await get_active_authorized_session(db, user)
+    except Exception as exc:
+        log(f"task={task.id} export continuing without authorization error={exc}")
+        cookies = None
+
+    job.status = TaskStatus.RUNNING
+    task.progress_current = 0
+    task.progress_total = len(job.article_ids)
+    await db.commit()
+    log(
+        f"task={task.id} exporting job={job.id} name={job.name} "
+        f"format={job.format.value} articles={len(job.article_ids)}"
+    )
+    articles = await load_articles_by_ids(db, task.user_id, job.article_ids)
+    for index, article in enumerate(articles, start=1):
+        await ensure_not_cancelled(db, task)
+        if article.content_status != FetchStatus.FETCHED:
+            log(f"task={task.id} export prefetch article={article.id} title={article.title}")
+            await fetch_article_content(db, article, cookies=cookies)
+        else:
+            content_result = await db.execute(
+                select(ArticleContent).where(ArticleContent.article_id == article.id)
+            )
+            if content_result.scalar_one_or_none() is None:
+                log(f"task={task.id} export refetch missing content article={article.id}")
+                await fetch_article_content(db, article, cookies=cookies)
+        task.progress_current = index
+        await db.commit()
+
+    await run_export_job(db, job)
+    task.progress_current = task.progress_total
+    await db.commit()
+    log(f"task={task.id} exported job={job.id}")
+
+
+async def sync_export_failure(
+    db: AsyncSession,
+    task: CollectionTask,
+    error_message: str,
+) -> None:
+    if task.task_type != TaskType.EXPORT_ARTICLES:
+        return
+    try:
+        job = await load_export_job(db, task)
+    except Exception:
+        return
+    job.status = TaskStatus.FAILED
+    job.error_message = error_message
+    job.finished_at = datetime.now(UTC)
 
 
 async def upsert_article(
@@ -392,7 +502,6 @@ async def upsert_article(
             appmsgid=article_data["appmsgid"],
             itemidx=article_data["itemidx"],
             content_status=FetchStatus.PENDING,
-            comment_status=FetchStatus.PENDING,
             raw_data=article_data["raw_data"],
         )
         db.add(article)
@@ -431,6 +540,25 @@ async def run_worker_slot(worker_name: str, *, poll_interval: float, queue: str)
         await run_task(task_id, worker_name=worker_name)
 
 
+async def run_export_cleanup_loop() -> None:
+    interval = max(60, settings.export_cleanup_interval_seconds)
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await cleanup_expired_exports(db)
+            log(
+                "export cleanup "
+                f"cutoff={result.cutoff.isoformat()} "
+                f"deleted_jobs={result.deleted_jobs} "
+                f"deleted_files={result.deleted_files} "
+                f"deleted_tasks={result.deleted_tasks} "
+                f"deleted_dirs={result.deleted_dirs}"
+            )
+        except Exception as exc:
+            log(f"export cleanup failed error={exc}")
+        await asyncio.sleep(interval)
+
+
 async def run_worker_loop(
     poll_interval: float,
     *,
@@ -450,4 +578,5 @@ async def run_worker_loop(
         )
         for slot in range(1, worker_count + 1)
     ]
+    slots.append(asyncio.create_task(run_export_cleanup_loop()))
     await asyncio.gather(*slots)

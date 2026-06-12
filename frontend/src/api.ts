@@ -126,6 +126,27 @@ export type ArticleSummaryResponse = {
   recent: Article[];
 };
 
+export type ExportFile = {
+  id: string;
+  file_name: string;
+  file_path: string;
+  content_type: string;
+  size_bytes: number;
+};
+
+export type ExportJob = {
+  id: string;
+  name: string;
+  format: "pdf" | "docx" | "markdown" | "zip";
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  note: string;
+  created_at: string;
+  finished_at: string | null;
+  expires_at: string | null;
+  error_message: string | null;
+  files: ExportFile[];
+};
+
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,

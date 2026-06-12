@@ -2,7 +2,7 @@
 
 ## Product Goal
 
-WeVault is a personal and team-ready archive for WeChat Official Account content. It turns public account article streams into a durable knowledge base with clean text, comments, assets, and high-quality exports.
+WeVault is a personal and team-ready archive for WeChat Official Account content. It turns public account article streams into a durable knowledge base with clean text, assets, and high-quality exports.
 
 ## First Version Scope
 
@@ -13,13 +13,14 @@ The MVP should include:
 - Public account source discovery by account search or article URL parsing
 - Article list synchronization after a source is added
 - Manual article content collection from selected articles
-- Optional source-level automatic content and comment collection
-- Article comment collection
+- Optional source-level automatic content collection
 - Article library with collection status
 - Export center for PDF, DOCX, and Markdown
 
 The MVP should not include:
 
+- Article comment collection
+- Global settings management
 - Workspace/team collaboration
 - NotebookLM upload
 - AI analysis
@@ -43,7 +44,6 @@ Backend API
 Worker
   Article list collection
   Article content collection
-  Comment collection
   Export generation
 
 Storage
@@ -61,7 +61,7 @@ User logs in
   -> System fetches article list
   -> Articles enter pending content status
   -> User selects articles to fetch
-  -> Worker fetches article HTML, assets, text, Markdown, and comments
+  -> Worker fetches article HTML, assets, text, and Markdown
   -> User exports selected articles as PDF, DOCX, or Markdown
 ```
 
@@ -72,21 +72,18 @@ Public account sources should support two discovery methods:
 - Search by public account name
 - Parse from an existing article URL
 
-After a source is added, WeVault should fetch the article list first. Full article content and comments should be separate tasks. Each source can define whether content and comments should be fetched automatically after list synchronization.
+After a source is added, WeVault should fetch the article list first. Full article content should be a separate task. Each source can define whether content should be fetched automatically after list synchronization.
 
 Recommended source settings:
 
 - `auto_fetch_content`
-- `auto_fetch_comments`
 - `fetch_limit_per_run`
 - `fetch_since_days`
-- `comment_fetch_policy`
 
 Default behavior should be conservative:
 
 - Fetch article list automatically
 - Do not fetch article content automatically
-- Do not fetch comments automatically
 
 ## Content Pipeline
 
@@ -114,7 +111,6 @@ Main tables:
 - `wechat_sources`
 - `articles`
 - `article_contents`
-- `article_comments`
 - `collection_tasks`
 - `export_jobs`
 - `export_files`
@@ -131,7 +127,6 @@ Recommended task types:
 
 - `fetch_source_articles`
 - `fetch_article_content`
-- `fetch_article_comments`
 - `export_articles`
 
 Tasks should record status, progress, retry count, error message, and timestamps.
@@ -209,11 +204,18 @@ Current supported worker handler:
   article metadata into `articles`.
 - `fetch_article_content`: fetches saved articles'正文 content and stores clean
   HTML, Markdown, plain text, and cached assets.
+- `export_articles`: fetches missing article content when needed, then exports
+  selected articles to PDF, DOCX, Markdown, or a multi-format ZIP bundle and
+  records downloadable files in `export_files`.
+- `export cleanup`: deletes expired export files, `export_files`,
+  `export_jobs`, and related export task rows after `EXPORT_FILE_TTL_DAYS`
+  days. The default retention is 14 days.
 
 The task payload currently carries collection options:
 
 - `source_id`
-- `range`: `7d`, `30d`, `90d`, or `all`
+- `range`: `7d`, `30d`, `90d`, `custom`, or `all`
+- `start_date` / `end_date`: required when `range` is `custom`
 - `limit`: `30`, `50`, `100`, or `0` for no limit
 - `fetch_content`
 - `skip_existing`

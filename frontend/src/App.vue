@@ -12,6 +12,7 @@ import {
   type ArticleListResponse,
   type ArticleSummaryResponse,
   type CollectionTask,
+  type ExportJob,
   type SourceSearchItem,
   type SourceSearchResponse,
   type TokenResponse,
@@ -21,7 +22,7 @@ import {
   type WechatSource,
 } from "./api";
 
-type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "settings";
+type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports";
 type AuthMode = "login" | "register";
 type ToastKind = "success" | "error";
 type SourceViewMode = "list" | "grid";
@@ -71,19 +72,6 @@ const views: Array<{ id: ViewId; label: string; icon: string; title: string; sub
     title: "导出中心",
     subtitle: "生成保留文本的 PDF、DOCX 和 Markdown 文件。",
   },
-  {
-    id: "settings",
-    label: "设置",
-    icon: "⚙",
-    title: "设置",
-    subtitle: "配置默认采集策略和导出偏好。",
-  },
-];
-
-const exports = [
-  { name: "产品笔记精选 24 篇", note: "PDF · 保留文本 · 28.4 MB" },
-  { name: "企业知识库专题", note: "DOCX · 16 篇文章 · 12.1 MB" },
-  { name: "SaaS 方法论精选", note: "Markdown ZIP · 保留正文" },
 ];
 
 const activeView = ref<ViewId>("dashboard");
@@ -131,6 +119,17 @@ const taskSubmitting = ref(false);
 const tasks = ref<CollectionTask[]>([]);
 const taskPage = ref(1);
 const taskPageSize = ref(10);
+const exportJobs = ref<ExportJob[]>([]);
+const exportLoading = ref(false);
+const exportSubmitting = ref(false);
+const exportPage = ref(1);
+const exportPageSize = ref(10);
+const articleExportMenuId = ref("");
+const pendingDownloadExportIds = ref<Set<string>>(new Set());
+const exportForm = ref({
+  name: "",
+  formats: ["markdown"] as Array<"pdf" | "docx" | "markdown">,
+});
 const dashboardArticleLoading = ref(false);
 const dashboardArticleTotal = ref(0);
 const dashboardContentFetched = ref(0);
@@ -155,6 +154,8 @@ const instantArticleTask = ref<{
 } | null>(null);
 const taskForm = ref({
   range: "7d",
+  startDate: "",
+  endDate: "",
   limit: 50,
   fetchContent: false,
   skipExisting: true,
@@ -163,6 +164,7 @@ let wechatLoginTimer: number | undefined;
 let toastTimer: number | undefined;
 let instantArticleTaskTimer: number | undefined;
 let instantArticleTaskTimeout: number | undefined;
+let exportPollTimer: number | undefined;
 
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
 const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
@@ -222,6 +224,14 @@ const paginatedTasks = computed(() => {
   const start = (page - 1) * taskPageSize.value;
   return tasks.value.slice(start, start + taskPageSize.value);
 });
+const exportPageCount = computed(() =>
+  Math.max(1, Math.ceil(exportJobs.value.length / exportPageSize.value)),
+);
+const paginatedExports = computed(() => {
+  const page = Math.min(exportPage.value, exportPageCount.value);
+  const start = (page - 1) * exportPageSize.value;
+  return exportJobs.value.slice(start, start + exportPageSize.value);
+});
 const articlePageCount = computed(() =>
   Math.max(1, Math.ceil(articleTotal.value / articlePageSize.value)),
 );
@@ -235,6 +245,9 @@ const canBatchFetchContent = computed(() =>
   selectedArticles.value.some((article) =>
     ["pending", "failed"].includes(article.content_status),
   ),
+);
+const canExportSelectedArticles = computed(
+  () => !isArticleTrashMode.value && selectedArticles.value.length > 0,
 );
 const allVisibleArticlesSelected = computed(
   () =>
@@ -272,6 +285,7 @@ async function loadCurrentUser() {
     await loadDashboardArticles();
     await loadArticles();
     await loadTasks();
+    await loadExports();
   } catch {
     logout();
   }
@@ -304,6 +318,7 @@ async function submitAuth() {
     await loadSources();
     await loadDashboardArticles();
     await loadTasks();
+    await loadExports();
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "登录失败";
   } finally {
@@ -332,6 +347,9 @@ function setView(viewId: ViewId) {
   }
   if (viewId === "tasks") {
     void loadTasks();
+  }
+  if (viewId === "exports") {
+    void loadExports();
   }
   if (viewId === "dashboard") {
     void loadDashboardArticles();
@@ -458,6 +476,16 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
+function formatFileSize(value?: number | null) {
+  if (!value) {
+    return "-";
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
 function sourceStatusLabel(status: WechatSource["status"]) {
   if (status === "active") {
     return "正常";
@@ -516,6 +544,16 @@ function setTaskPageSize(event: Event) {
   const target = event.target as HTMLSelectElement;
   taskPageSize.value = Number(target.value);
   taskPage.value = 1;
+}
+
+function setExportPage(page: number) {
+  exportPage.value = Math.min(Math.max(page, 1), exportPageCount.value);
+}
+
+function setExportPageSize(event: Event) {
+  const target = event.target as HTMLSelectElement;
+  exportPageSize.value = Number(target.value);
+  exportPage.value = 1;
 }
 
 function setArticlePage(page: number) {
@@ -604,6 +642,40 @@ function clearArticleSelection() {
   selectedArticleIds.value = new Set();
 }
 
+function defaultExportName() {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+    now.getDate(),
+  ).padStart(2, "0")}`;
+  return `WeVault 导出 ${stamp}`;
+}
+
+function toggleExportFormat(format: "pdf" | "docx" | "markdown", checked: boolean) {
+  const formats = new Set(exportForm.value.formats);
+  if (checked) {
+    formats.add(format);
+  } else {
+    formats.delete(format);
+  }
+  exportForm.value.formats = [...formats];
+}
+
+function toggleArticleExportMenu(article: Article) {
+  articleExportMenuId.value = articleExportMenuId.value === article.id ? "" : article.id;
+}
+
+function closeArticleExportMenu() {
+  articleExportMenuId.value = "";
+}
+
+function openArticleFromList(article: Article) {
+  if (isArticleTrashMode.value) {
+    viewOriginalArticle(article);
+    return;
+  }
+  void viewArticle(article);
+}
+
 function selectedFetchableArticleIds() {
   return selectedArticles.value
     .filter((article) => ["pending", "failed"].includes(article.content_status))
@@ -614,6 +686,8 @@ function openTaskModal(source: WechatSource) {
   selectedTaskSource.value = source;
   taskForm.value = {
     range: "7d",
+    startDate: "",
+    endDate: "",
     limit: 50,
     fetchContent: false,
     skipExisting: true,
@@ -629,15 +703,33 @@ async function createSourceArticleTask() {
   if (!selectedTaskSource.value) {
     return;
   }
+  if (taskForm.value.range === "custom") {
+    if (!taskForm.value.startDate || !taskForm.value.endDate) {
+      showToast("error", "请选择自定义开始日期和结束日期");
+      return;
+    }
+    if (taskForm.value.startDate > taskForm.value.endDate) {
+      showToast("error", "开始日期不能晚于结束日期");
+      return;
+    }
+  }
 
   taskSubmitting.value = true;
   try {
+    const customRange =
+      taskForm.value.range === "custom"
+        ? {
+            start_date: taskForm.value.startDate,
+            end_date: taskForm.value.endDate,
+          }
+        : {};
     await apiRequest<CollectionTask>("/tasks/source-articles", {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
         source_id: selectedTaskSource.value.id,
         range: taskForm.value.range,
+        ...customRange,
         limit: taskForm.value.limit,
         fetch_content: taskForm.value.fetchContent,
         skip_existing: taskForm.value.skipExisting,
@@ -995,6 +1087,43 @@ function taskStatusTag(status: CollectionTask["status"]) {
   return "muted";
 }
 
+function exportFormatLabel(job: ExportJob) {
+  if (job.format === "pdf") {
+    return "PDF";
+  }
+  if (job.format === "docx") {
+    return "DOCX";
+  }
+  if (job.format === "markdown") {
+    return "Markdown";
+  }
+  return "ZIP";
+}
+
+function exportStatusLabel(status: ExportJob["status"]) {
+  const labels: Record<ExportJob["status"], string> = {
+    pending: "待执行",
+    running: "导出中",
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  return labels[status];
+}
+
+function exportStatusTag(status: ExportJob["status"]) {
+  return taskStatusTag(status);
+}
+
+function exportArticleCount(job: ExportJob) {
+  const match = job.note.match(/(\d+)\s*篇文章/);
+  return match ? `${formatNumber(Number(match[1]))} 篇` : "-";
+}
+
+function exportFileSize(job: ExportJob) {
+  return formatFileSize(job.files[0]?.size_bytes);
+}
+
 function taskRunMode(task: CollectionTask) {
   const runMode = task.payload?.run_mode;
   return typeof runMode === "string" ? runMode : "immediate";
@@ -1349,6 +1478,147 @@ async function loadTasks() {
   }
 }
 
+async function loadExports() {
+  if (!token.value) {
+    exportJobs.value = [];
+    return;
+  }
+
+  exportLoading.value = true;
+  try {
+    exportJobs.value = await apiRequest<ExportJob[]>("/exports", {
+      headers: authHeaders(),
+    });
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "读取导出中心失败");
+  } finally {
+    exportLoading.value = false;
+  }
+}
+
+async function createExportJobsForArticles(
+  articleIds: string[],
+  formats: Array<"pdf" | "docx" | "markdown">,
+  name: string,
+) {
+  if (articleIds.length === 0) {
+    showToast("error", "请选择文章再导出");
+    return;
+  }
+  if (formats.length === 0) {
+    showToast("error", "请选择导出格式");
+    return;
+  }
+
+  exportSubmitting.value = true;
+  try {
+    const uniqueFormats = Array.from(new Set(formats));
+    const response = await apiRequest<{ status: string; task_id: string; job_id: string }>(
+      "/exports",
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          name,
+          format: uniqueFormats.length > 1 ? "zip" : uniqueFormats[0],
+          formats: uniqueFormats.length > 1 ? uniqueFormats : undefined,
+          article_ids: articleIds,
+        }),
+      },
+    );
+    pendingDownloadExportIds.value = new Set([...pendingDownloadExportIds.value, response.job_id]);
+    showToast("success", uniqueFormats.length > 1 ? "ZIP 导出任务已创建" : "导出任务已创建");
+    closeArticleExportMenu();
+    clearArticleSelection();
+    activeView.value = "exports";
+    await loadExports();
+    await loadTasks();
+    startExportPolling();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "创建导出任务失败");
+  } finally {
+    exportSubmitting.value = false;
+  }
+}
+
+async function createBatchExportJobs() {
+  await createExportJobsForArticles(
+    [...selectedArticleIds.value],
+    exportForm.value.formats,
+    defaultExportName(),
+  );
+}
+
+async function createSingleExportJob(
+  article: Article,
+  format: "pdf" | "docx" | "markdown",
+) {
+  await createExportJobsForArticles([article.id], [format], article.title);
+}
+
+async function downloadExport(job: ExportJob) {
+  try {
+    const response = await fetch(getApiUrl(`/api/v1/exports/${job.id}/download`), {
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error(`下载失败：${response.status}`);
+    }
+    const blob = await response.blob();
+    const fileName = job.files[0]?.file_name || `${job.name}.${job.format === "zip" ? "zip" : "md"}`;
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    window.URL.revokeObjectURL(url);
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "下载导出文件失败");
+  }
+}
+
+function stopExportPolling() {
+  if (exportPollTimer !== undefined) {
+    window.clearInterval(exportPollTimer);
+    exportPollTimer = undefined;
+  }
+}
+
+function startExportPolling() {
+  if (exportPollTimer !== undefined) {
+    return;
+  }
+  exportPollTimer = window.setInterval(() => {
+    void pollPendingExports();
+  }, 1500);
+  void pollPendingExports();
+}
+
+async function pollPendingExports() {
+  if (pendingDownloadExportIds.value.size === 0) {
+    stopExportPolling();
+    return;
+  }
+  await loadExports();
+  const remaining = new Set(pendingDownloadExportIds.value);
+  for (const job of exportJobs.value) {
+    if (!remaining.has(job.id)) {
+      continue;
+    }
+    if (job.status === "succeeded") {
+      remaining.delete(job.id);
+      await downloadExport(job);
+    } else if (["failed", "cancelled"].includes(job.status)) {
+      remaining.delete(job.id);
+      showToast("error", job.error_message || "导出失败");
+    }
+  }
+  pendingDownloadExportIds.value = remaining;
+  if (remaining.size === 0) {
+    stopExportPolling();
+  }
+}
+
 onMounted(() => {
   document.addEventListener("click", closeUserMenu);
   void loadCurrentUser();
@@ -1358,6 +1628,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("click", closeUserMenu);
   stopWechatLoginPolling();
   stopInstantArticleTaskPolling();
+  stopExportPolling();
   if (toastTimer !== undefined) {
     window.clearTimeout(toastTimer);
   }
@@ -1500,21 +1771,6 @@ onBeforeUnmount(() => {
         <div>
           <h1>{{ currentView.title }}</h1>
           <p>{{ currentView.subtitle }}</p>
-        </div>
-        <div class="topbar-actions">
-          <button class="ghost-button" type="button">搜索</button>
-          <button
-            class="primary-button"
-            type="button"
-            :disabled="!hasValidWechatAuthorization"
-            :title="hasValidWechatAuthorization ? '添加公众号源' : '请先扫码授权微信公众号'"
-            @click="
-              activeView = 'sources';
-              openSourceModal('search');
-            "
-          >
-            添加公众号源
-          </button>
         </div>
       </header>
 
@@ -2036,6 +2292,41 @@ onBeforeUnmount(() => {
               抓取正文
             </button>
             <button
+              v-if="!isArticleTrashMode"
+              class="primary-button"
+              type="button"
+              :disabled="!canExportSelectedArticles || exportSubmitting"
+              @click="createBatchExportJobs"
+            >
+              {{ exportSubmitting ? "创建中..." : "导出" }}
+            </button>
+            <div v-if="!isArticleTrashMode" class="export-format-checks">
+              <label>
+                <input
+                  type="checkbox"
+                  :checked="exportForm.formats.includes('pdf')"
+                  @change="toggleExportFormat('pdf', ($event.target as HTMLInputElement).checked)"
+                />
+                PDF
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  :checked="exportForm.formats.includes('docx')"
+                  @change="toggleExportFormat('docx', ($event.target as HTMLInputElement).checked)"
+                />
+                DOCX
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  :checked="exportForm.formats.includes('markdown')"
+                  @change="toggleExportFormat('markdown', ($event.target as HTMLInputElement).checked)"
+                />
+                Markdown
+              </label>
+            </div>
+            <button
               v-if="isArticleTrashMode"
               class="primary-button"
               type="button"
@@ -2090,19 +2381,30 @@ onBeforeUnmount(() => {
                     />
                   </td>
                   <td>
-                    <img
-                      v-if="article.cover_url"
-                      class="article-cover"
-                      :src="articleCoverSrc(article)"
-                      :alt="article.title"
-                    />
-                    <div v-else class="article-cover article-cover-empty">WV</div>
+                    <button
+                      class="article-cover-button"
+                      type="button"
+                      :aria-label="`查看 ${article.title}`"
+                      @click="openArticleFromList(article)"
+                    >
+                      <img
+                        v-if="article.cover_url"
+                        class="article-cover"
+                        :src="articleCoverSrc(article)"
+                        :alt="article.title"
+                      />
+                      <span v-else class="article-cover article-cover-empty">WV</span>
+                    </button>
                   </td>
                   <td>
-                    <div class="article-title-cell">
+                    <button
+                      class="article-title-cell article-title-button"
+                      type="button"
+                      @click="openArticleFromList(article)"
+                    >
                       <strong>{{ article.title }}</strong>
                       <span>{{ article.digest || "暂无摘要" }}</span>
-                    </div>
+                    </button>
                   </td>
                   <td>
                     <div class="article-source-cell">
@@ -2167,6 +2469,26 @@ onBeforeUnmount(() => {
                       >
                         {{ articleViewLoadingId === article.id ? "读取中..." : "查看" }}
                       </button>
+                      <div class="inline-export-menu">
+                        <button
+                          class="link-button"
+                          type="button"
+                          @click="toggleArticleExportMenu(article)"
+                        >
+                          导出
+                        </button>
+                        <div v-if="articleExportMenuId === article.id" class="export-popover">
+                          <button type="button" @click="createSingleExportJob(article, 'pdf')">
+                            PDF
+                          </button>
+                          <button type="button" @click="createSingleExportJob(article, 'docx')">
+                            DOCX
+                          </button>
+                          <button type="button" @click="createSingleExportJob(article, 'markdown')">
+                            MD
+                          </button>
+                        </div>
+                      </div>
                       <button
                         class="link-button danger"
                         type="button"
@@ -2191,15 +2513,28 @@ onBeforeUnmount(() => {
                   :checked="selectedArticleIds.has(article.id)"
                   @change="toggleArticleSelection(article)"
                 />
-                <img
-                  v-if="article.cover_url"
-                  class="article-cover"
-                  :src="articleCoverSrc(article)"
-                  :alt="article.title"
-                />
-                <div v-else class="article-cover article-cover-empty">WV</div>
+                <button
+                  class="article-cover-button"
+                  type="button"
+                  :aria-label="`查看 ${article.title}`"
+                  @click="openArticleFromList(article)"
+                >
+                  <img
+                    v-if="article.cover_url"
+                    class="article-cover"
+                    :src="articleCoverSrc(article)"
+                    :alt="article.title"
+                  />
+                  <span v-else class="article-cover article-cover-empty">WV</span>
+                </button>
                 <div class="article-title-cell">
-                  <strong>{{ article.title }}</strong>
+                  <button
+                    class="article-title-button"
+                    type="button"
+                    @click="openArticleFromList(article)"
+                  >
+                    <strong>{{ article.title }}</strong>
+                  </button>
                   <span>{{ article.digest || "暂无摘要" }}</span>
                   <div class="article-source-cell">
                     <img
@@ -2256,6 +2591,26 @@ onBeforeUnmount(() => {
                     >
                       {{ articleViewLoadingId === article.id ? "读取中..." : "查看" }}
                     </button>
+                    <div class="inline-export-menu">
+                      <button
+                        class="link-button"
+                        type="button"
+                        @click="toggleArticleExportMenu(article)"
+                      >
+                        导出
+                      </button>
+                      <div v-if="articleExportMenuId === article.id" class="export-popover">
+                        <button type="button" @click="createSingleExportJob(article, 'pdf')">
+                          PDF
+                        </button>
+                        <button type="button" @click="createSingleExportJob(article, 'docx')">
+                          DOCX
+                        </button>
+                        <button type="button" @click="createSingleExportJob(article, 'markdown')">
+                          MD
+                        </button>
+                      </div>
+                    </div>
                     <button class="link-button danger" type="button" @click="deleteArticle(article)">
                       删除
                     </button>
@@ -2484,38 +2839,136 @@ onBeforeUnmount(() => {
               <h2>导出中心</h2>
               <p>PDF、DOCX、Markdown 都基于已保存的 clean HTML 和 Markdown 生成。</p>
             </div>
-            <button class="primary-button" type="button">新建导出</button>
+            <button class="ghost-button" type="button" :disabled="exportLoading" @click="loadExports">
+              {{ exportLoading ? "刷新中..." : "刷新" }}
+            </button>
           </div>
-          <div class="export-grid">
-            <article v-for="item in exports" :key="item.name" class="export-item">
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.note }}</span>
-              <button class="small-button" type="button">下载</button>
-            </article>
+          <div v-if="exportLoading" class="empty-state">正在读取导出任务</div>
+          <div v-else-if="exportJobs.length === 0" class="empty-state">
+            还没有导出任务，请在文章库中选择已抓取正文的文章后导出。
           </div>
+          <template v-else>
+            <div class="export-table-wrap">
+              <table class="export-table">
+                <thead>
+                  <tr>
+                    <th>导出名称</th>
+                    <th>格式</th>
+                    <th>状态</th>
+                    <th>文章数</th>
+                    <th>创建时间</th>
+                    <th>完成时间</th>
+                    <th>过期时间</th>
+                    <th>文件大小</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in paginatedExports" :key="item.id">
+                    <td>
+                      <div class="task-note-cell">
+                        <strong>{{ item.name }}</strong>
+                        <span>{{ item.id }}</span>
+                      </div>
+                    </td>
+                    <td>{{ exportFormatLabel(item) }}</td>
+                    <td>
+                      <span class="tag" :class="exportStatusTag(item.status)">
+                        {{ exportStatusLabel(item.status) }}
+                      </span>
+                    </td>
+                    <td>{{ exportArticleCount(item) }}</td>
+                    <td>{{ formatDateTime(item.created_at) }}</td>
+                    <td>{{ formatDateTime(item.finished_at) }}</td>
+                    <td>{{ formatDateTime(item.expires_at) }}</td>
+                    <td>{{ exportFileSize(item) }}</td>
+                    <td>
+                      <div class="task-actions">
+                        <button
+                          class="link-button"
+                          type="button"
+                          :disabled="item.status !== 'succeeded' || item.files.length === 0"
+                          @click="downloadExport(item)"
+                        >
+                          下载
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="export-card-list">
+              <article v-for="item in paginatedExports" :key="item.id" class="task-row">
+                <div>
+                  <strong>{{ item.name }}</strong>
+                  <span>{{ exportFormatLabel(item) }} · {{ exportArticleCount(item) }}</span>
+                  <span>创建时间：{{ formatDateTime(item.created_at) }}</span>
+                  <span>完成时间：{{ formatDateTime(item.finished_at) }}</span>
+                  <span>过期时间：{{ formatDateTime(item.expires_at) }}</span>
+                  <span>文件大小：{{ exportFileSize(item) }}</span>
+                </div>
+                <div class="task-status-cell">
+                  <span class="tag" :class="exportStatusTag(item.status)">
+                    {{ exportStatusLabel(item.status) }}
+                  </span>
+                </div>
+                <div class="task-actions">
+                  <button
+                    class="link-button"
+                    type="button"
+                    :disabled="item.status !== 'succeeded' || item.files.length === 0"
+                    @click="downloadExport(item)"
+                  >
+                    下载
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div class="source-pagination">
+              <label>
+                <span>每页</span>
+                <select :value="exportPageSize" @change="setExportPageSize">
+                  <option :value="10">10</option>
+                  <option :value="20">20</option>
+                  <option :value="50">50</option>
+                </select>
+              </label>
+              <div class="pagination-links">
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="exportPage <= 1"
+                  @click="setExportPage(exportPage - 1)"
+                >
+                  上一页
+                </button>
+                <button
+                  v-for="page in exportPageCount"
+                  :key="page"
+                  class="page-button"
+                  :class="{ active: page === exportPage }"
+                  type="button"
+                  @click="setExportPage(page)"
+                >
+                  {{ page }}
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="exportPage >= exportPageCount"
+                  @click="setExportPage(exportPage + 1)"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          </template>
         </section>
       </section>
 
-      <section v-else class="view active">
-        <section class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>设置</h2>
-              <p>控制默认采集策略、导出格式和保存位置。</p>
-            </div>
-          </div>
-          <div class="settings-list">
-            <label>
-              <span>添加公众号源后自动抓取正文</span>
-              <input type="checkbox" />
-            </label>
-            <label>
-              <span>每次同步最多抓取文章数</span>
-              <input type="number" min="1" value="50" />
-            </label>
-          </div>
-        </section>
-      </section>
     </main>
 
     <div v-if="showWechatLoginLoading" class="loading-backdrop" aria-live="polite">
@@ -2654,7 +3107,7 @@ onBeforeUnmount(() => {
           <div class="modal-header">
             <div>
               <h2 id="source-task-title">创建采集任务</h2>
-              <p>{{ selectedTaskSource?.name }} · 当前仅创建任务，执行和停止稍后接入。</p>
+              <p>{{ selectedTaskSource?.name }} · 创建后由 worker 立即执行。</p>
             </div>
           </div>
           <form class="modal-form" @submit.prevent="createSourceArticleTask">
@@ -2664,9 +3117,20 @@ onBeforeUnmount(() => {
                 <option value="7d">最近 7 天</option>
                 <option value="30d">最近 30 天</option>
                 <option value="90d">最近 90 天</option>
+                <option value="custom">自定义</option>
                 <option value="all">全部</option>
               </select>
             </label>
+            <div v-if="taskForm.range === 'custom'" class="date-range-row">
+              <label>
+                <span>开始日期</span>
+                <input v-model="taskForm.startDate" type="date" />
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input v-model="taskForm.endDate" type="date" />
+              </label>
+            </div>
             <label>
               <span>最多文章数</span>
               <select v-model.number="taskForm.limit">
