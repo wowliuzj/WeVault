@@ -1746,6 +1746,12 @@ tr:last-child td {
   padding-bottom: 10px;
 }
 
+.article-select-checkbox {
+  width: 24px;
+  height: 24px;
+  accent-color: var(--accent);
+}
+
 .article-cover {
   display: block;
   width: 68px;

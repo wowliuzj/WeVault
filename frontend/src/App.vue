@@ -128,7 +128,7 @@ const articleExportMenuId = ref("");
 const pendingDownloadExportIds = ref<Set<string>>(new Set());
 const exportForm = ref({
   name: "",
-  formats: ["markdown"] as Array<"pdf" | "docx" | "markdown">,
+  formats: ["pdf"] as Array<"pdf" | "docx" | "markdown">,
 });
 const dashboardArticleLoading = ref(false);
 const dashboardArticleTotal = ref(0);
@@ -2357,6 +2357,7 @@ onBeforeUnmount(() => {
                   <th>
                     <input
                       type="checkbox"
+                      class="article-select-checkbox"
                       aria-label="全选当前页文章"
                       :checked="allVisibleArticlesSelected"
                       @change="toggleVisibleArticleSelection"
@@ -2375,6 +2376,7 @@ onBeforeUnmount(() => {
                   <td>
                     <input
                       type="checkbox"
+                      class="article-select-checkbox"
                       :aria-label="`选择 ${article.title}`"
                       :checked="selectedArticleIds.has(article.id)"
                       @change="toggleArticleSelection(article)"
@@ -2509,6 +2511,7 @@ onBeforeUnmount(() => {
               <article v-for="article in articles" :key="article.id" class="article-row">
                 <input
                   type="checkbox"
+                  class="article-select-checkbox"
                   :aria-label="`选择 ${article.title}`"
                   :checked="selectedArticleIds.has(article.id)"
                   @change="toggleArticleSelection(article)"
