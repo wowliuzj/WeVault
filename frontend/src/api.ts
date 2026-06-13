@@ -172,8 +172,16 @@ export function getAuthHeaders(token: string): HeadersInit {
 }
 
 export function getApiUrl(path: string): string {
-  const baseUrl = new URL(API_BASE_URL);
-  return `${baseUrl.origin}${path}`;
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+
+  if (/^https?:\/\//i.test(API_BASE_URL)) {
+    const baseUrl = new URL(API_BASE_URL);
+    return `${baseUrl.origin}${path}`;
+  }
+
+  return path;
 }
 
 export function getSourceAvatarUrl(
