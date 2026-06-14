@@ -166,6 +166,8 @@ let toastTimer: number | undefined;
 let instantArticleTaskTimer: number | undefined;
 let instantArticleTaskTimeout: number | undefined;
 let exportPollTimer: number | undefined;
+let exportPollInFlight = false;
+const exportDownloadInFlightIds = new Set<string>();
 
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
 const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
@@ -1597,27 +1599,44 @@ function startExportPolling() {
 }
 
 async function pollPendingExports() {
-  if (pendingDownloadExportIds.value.size === 0) {
-    stopExportPolling();
+  if (exportPollInFlight) {
     return;
   }
-  await loadExports();
-  const remaining = new Set(pendingDownloadExportIds.value);
-  for (const job of exportJobs.value) {
-    if (!remaining.has(job.id)) {
-      continue;
-    }
-    if (job.status === "succeeded") {
-      remaining.delete(job.id);
-      await downloadExport(job);
-    } else if (["failed", "cancelled"].includes(job.status)) {
-      remaining.delete(job.id);
-      showToast("error", job.error_message || "导出失败");
-    }
-  }
-  pendingDownloadExportIds.value = remaining;
-  if (remaining.size === 0) {
+  exportPollInFlight = true;
+  if (pendingDownloadExportIds.value.size === 0) {
     stopExportPolling();
+    exportPollInFlight = false;
+    return;
+  }
+  try {
+    await loadExports();
+    const remaining = new Set(pendingDownloadExportIds.value);
+    for (const job of exportJobs.value) {
+      if (!remaining.has(job.id)) {
+        continue;
+      }
+      if (job.status === "succeeded") {
+        remaining.delete(job.id);
+        pendingDownloadExportIds.value = new Set(remaining);
+        if (!exportDownloadInFlightIds.has(job.id)) {
+          exportDownloadInFlightIds.add(job.id);
+          try {
+            await downloadExport(job);
+          } finally {
+            exportDownloadInFlightIds.delete(job.id);
+          }
+        }
+      } else if (["failed", "cancelled"].includes(job.status)) {
+        remaining.delete(job.id);
+        showToast("error", job.error_message || "导出失败");
+      }
+    }
+    pendingDownloadExportIds.value = remaining;
+    if (remaining.size === 0) {
+      stopExportPolling();
+    }
+  } finally {
+    exportPollInFlight = false;
   }
 }
 
