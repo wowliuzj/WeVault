@@ -167,10 +167,12 @@ button:disabled {
 }
 
 .sidebar {
-  position: relative;
+  position: sticky;
+  top: 0;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  height: 100vh;
   padding: 20px 16px;
   border-right: 1px solid var(--line);
   background: #111820;
@@ -1913,6 +1915,7 @@ progress {
     z-index: 2;
     display: flex;
     gap: 0;
+    height: auto;
     padding: 12px;
     border-right: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
