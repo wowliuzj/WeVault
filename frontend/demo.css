@@ -1000,11 +1000,33 @@ tr:last-child td {
   min-height: 38px;
 }
 
+.modal-form input:disabled {
+  background: #f6f8fb;
+  color: var(--text-muted);
+}
+
 .modal-form input:focus,
 .modal-form select:focus,
 .modal-form textarea:focus {
   border-color: var(--accent);
   outline: 3px solid rgba(31, 111, 235, 0.12);
+}
+
+.account-form {
+  max-width: 560px;
+}
+
+.account-password-group {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.form-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
 }
 
 .date-range-row {

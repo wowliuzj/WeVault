@@ -22,7 +22,7 @@ import {
   type WechatSource,
 } from "./api";
 
-type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports";
+type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "account";
 type AuthMode = "login" | "register";
 type ToastKind = "success" | "error";
 type SourceViewMode = "list" | "grid";
@@ -72,6 +72,13 @@ const views: Array<{ id: ViewId; label: string; icon: string; title: string; sub
     title: "导出中心",
     subtitle: "生成保留文本的 PDF、DOCX 和 Markdown 文件。",
   },
+  {
+    id: "account",
+    label: "个人账户",
+    icon: "◐",
+    title: "个人账户",
+    subtitle: "管理当前平台账户的名称和密码。",
+  },
 ];
 
 const activeView = ref<ViewId>("dashboard");
@@ -88,6 +95,13 @@ const authForm = ref({
   password: "",
   displayName: "",
   inviteCode: "",
+});
+const accountSaving = ref(false);
+const accountError = ref("");
+const accountForm = ref({
+  displayName: "",
+  newPassword: "",
+  confirmPassword: "",
 });
 const wechatAccount = ref<WechatAccount | null>(null);
 const wechatLoading = ref(false);
@@ -267,7 +281,17 @@ const articleLoadingLabel = computed(() =>
 function setSession(response: TokenResponse) {
   token.value = response.access_token;
   currentUser.value = response.user;
+  resetAccountForm(response.user);
   localStorage.setItem("wevault_token", response.access_token);
+}
+
+function resetAccountForm(user = currentUser.value) {
+  accountForm.value = {
+    displayName: user?.display_name || "",
+    newPassword: "",
+    confirmPassword: "",
+  };
+  accountError.value = "";
 }
 
 function authHeaders(): HeadersInit {
@@ -283,6 +307,7 @@ async function loadCurrentUser() {
     currentUser.value = await apiRequest<User>("/auth/me", {
       headers: getAuthHeaders(token.value),
     });
+    resetAccountForm(currentUser.value);
     await loadWechatAccount();
     await loadSources();
     await loadDashboardArticles();
@@ -355,6 +380,9 @@ function setView(viewId: ViewId) {
   if (viewId === "exports") {
     void loadExports();
   }
+  if (viewId === "account") {
+    resetAccountForm();
+  }
   if (viewId === "dashboard") {
     void loadDashboardArticles();
     void loadSources();
@@ -377,6 +405,35 @@ function toggleUserMenu(event: MouseEvent) {
 
 function closeUserMenu() {
   userMenuOpen.value = false;
+}
+
+async function submitAccount() {
+  accountError.value = "";
+  if (accountForm.value.newPassword || accountForm.value.confirmPassword) {
+    if (accountForm.value.newPassword !== accountForm.value.confirmPassword) {
+      accountError.value = "两次输入的新密码不一致";
+      return;
+    }
+  }
+
+  accountSaving.value = true;
+  try {
+    const updatedUser = await apiRequest<User>("/auth/me", {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        display_name: accountForm.value.displayName,
+        new_password: accountForm.value.newPassword || null,
+      }),
+    });
+    currentUser.value = updatedUser;
+    resetAccountForm(updatedUser);
+    showToast("success", "个人账户已更新");
+  } catch (error) {
+    accountError.value = error instanceof Error ? error.message : "保存个人账户失败";
+  } finally {
+    accountSaving.value = false;
+  }
 }
 
 function showToast(kind: ToastKind, message: string) {
@@ -1219,6 +1276,7 @@ async function logout() {
   articleTotal.value = 0;
   articleMode.value = "active";
   selectedArticleIds.value = new Set();
+  resetAccountForm(null);
   stopInstantArticleTaskPolling();
   instantArticleTask.value = null;
   closeWechatLogin();
@@ -1787,8 +1845,8 @@ onBeforeUnmount(() => {
         >
           <span class="user-avatar">{{ currentUser?.email.slice(0, 1).toUpperCase() }}</span>
           <span class="user-copy">
-            <span class="user-name">{{ currentUser?.email }}</span>
-            <span class="user-role">个人空间</span>
+            <span class="user-name">{{ currentUser?.display_name || currentUser?.email }}</span>
+            <span class="user-role">{{ currentUser?.email }}</span>
           </span>
         </button>
         <div class="user-menu" :class="{ open: userMenuOpen }" role="menu">
@@ -3000,6 +3058,57 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </template>
+        </section>
+      </section>
+
+      <section v-else-if="activeView === 'account'" class="view active">
+        <section class="panel account-panel">
+          <div class="panel-header">
+            <div>
+              <h2>个人账户</h2>
+              <p>邮箱用于登录，暂不支持修改。</p>
+            </div>
+          </div>
+
+          <form class="modal-form account-form" @submit.prevent="submitAccount">
+            <label>
+              <span>邮箱</span>
+              <input :value="currentUser?.email" type="email" disabled />
+            </label>
+            <label>
+              <span>显示名称</span>
+              <input v-model="accountForm.displayName" type="text" maxlength="80" autocomplete="name" />
+            </label>
+            <div class="account-password-group">
+              <label>
+                <span>新密码</span>
+                <input
+                  v-model="accountForm.newPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="8"
+                />
+              </label>
+              <label>
+                <span>确认新密码</span>
+                <input
+                  v-model="accountForm.confirmPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="8"
+                />
+              </label>
+            </div>
+            <p v-if="accountError" class="form-error">{{ accountError }}</p>
+            <div class="modal-actions">
+              <button class="ghost-button" type="button" :disabled="accountSaving" @click="resetAccountForm()">
+                重置
+              </button>
+              <button class="primary-button" type="submit" :disabled="accountSaving">
+                {{ accountSaving ? "保存中..." : "保存修改" }}
+              </button>
+            </div>
+          </form>
         </section>
       </section>
 

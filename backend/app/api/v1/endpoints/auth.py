@@ -7,7 +7,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.db.session import get_db
 from app.models.enums import UserStatus
 from app.models.user import User
-from app.schemas.auth import TokenResponse, UserCreate, UserLogin, UserResponse
+from app.schemas.auth import TokenResponse, UserCreate, UserLogin, UserResponse, UserUpdate
 
 router = APIRouter()
 
@@ -72,6 +72,25 @@ async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)) -> Token
 
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
+    return serialize_user(current_user)
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(
+    payload: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    if "display_name" in payload.model_fields_set:
+        display_name = payload.display_name.strip() if payload.display_name else None
+        current_user.display_name = display_name or current_user.email.split("@")[0]
+
+    if payload.new_password:
+        current_user.password_hash = hash_password(payload.new_password)
+
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
     return serialize_user(current_user)
 
 
