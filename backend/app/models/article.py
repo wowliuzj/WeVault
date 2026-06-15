@@ -34,7 +34,7 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("wechat_accounts.id"),
         index=True,
     )
-    title: Mapped[str] = mapped_column(String(300), index=True)
+    title: Mapped[str] = mapped_column(Text)
     author: Mapped[str | None] = mapped_column(String(120))
     digest: Mapped[str | None] = mapped_column(Text)
     cover_url: Mapped[str | None] = mapped_column(Text)
