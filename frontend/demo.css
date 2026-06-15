@@ -1053,6 +1053,21 @@ tr:last-child td {
   min-height: auto;
 }
 
+.modal-form .inline-checkbox-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  color: #435061;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.modal-form .inline-checkbox-row input {
+  width: auto;
+  min-height: auto;
+}
+
 .readonly-row {
   color: var(--text-muted);
   font-size: 13px;

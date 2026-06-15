@@ -113,6 +113,12 @@ export type ArticleDetail = Article & {
   content_fetched_at: string | null;
 };
 
+export type ArticleFromUrlResponse = {
+  status: "created" | "existing";
+  article: Article;
+  task_id: string | null;
+};
+
 export type ArticleListResponse = {
   items: Article[];
   total: number;

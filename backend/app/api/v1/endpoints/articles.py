@@ -1,6 +1,9 @@
 import mimetypes
+import re
 from datetime import UTC, datetime
-from typing import Any
+from html import unescape
+from typing import Any, Literal
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 import httpx
@@ -13,7 +16,7 @@ from starlette.responses import FileResponse, Response
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.article import Article, ArticleContent
-from app.models.enums import FetchStatus, TaskStatus, TaskType
+from app.models.enums import FetchStatus, SourceFrom, SourceStatus, TaskStatus, TaskType
 from app.models.task import CollectionTask
 from app.models.user import User
 from app.models.wechat import WechatSource
@@ -24,6 +27,17 @@ from app.services.article_assets import (
     get_article_cover_file,
     is_allowed_wechat_image_url,
     normalize_image_url,
+)
+from app.services.article_fetcher import (
+    article_headers,
+    decode_js_string,
+    extract_js_value,
+    extract_meta_content,
+)
+from app.services.sources import (
+    SourceServiceError,
+    cache_source_avatar,
+    get_active_authorized_session,
 )
 from app.services.wechat_login_driver import MP_HEADERS
 
@@ -77,6 +91,17 @@ class ArticleBatchRequest(BaseModel):
     article_ids: list[UUID] = Field(min_length=1)
 
 
+class ArticleFromUrlRequest(BaseModel):
+    article_url: str = Field(min_length=8, max_length=2000)
+    fetch_content: bool = True
+
+
+class ArticleFromUrlResponse(BaseModel):
+    status: Literal["created", "existing"]
+    article: ArticleResponse
+    task_id: str | None = None
+
+
 def source_avatar_asset_url(source: WechatSource) -> str | None:
     if not source.avatar_storage_path:
         return None
@@ -110,6 +135,219 @@ def serialize_article(article: Article, source: WechatSource) -> ArticleResponse
         created_at=article.created_at,
         updated_at=article.updated_at,
     )
+
+
+def decode_extracted_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    decoded = unescape(decode_js_string(value)).strip()
+    return decoded or None
+
+
+def parse_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return int(value) if value.isdigit() else None
+
+
+def extract_query_value(url: str, *names: str) -> str | None:
+    query = parse_qs(urlparse(url).query)
+    for name in names:
+        value = (query.get(name) or [None])[0]
+        if value:
+            return value
+    return None
+
+
+def extract_source_name(page_html: str) -> str | None:
+    nickname = decode_extracted_value(extract_js_value(page_html, "nickname"))
+    if nickname:
+        return nickname
+    match = re.search(
+        r'class="[^"]*wx_follow_nickname[^"]*"[^>]*>(?P<name>[^<]+)<',
+        page_html,
+    )
+    if not match:
+        return None
+    return unescape(match.group("name")).strip() or None
+
+
+def parse_article_publish_time(page_html: str) -> datetime | None:
+    ct = parse_int(extract_js_value(page_html, "ct"))
+    if ct:
+        return datetime.fromtimestamp(ct, tz=UTC)
+
+    publish_time = decode_extracted_value(extract_js_value(page_html, "publish_time"))
+    if not publish_time:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(publish_time, fmt)
+            return parsed.replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_article_from_html(article_url: str, page_html: str) -> dict[str, Any]:
+    resolved_url = article_url
+    biz = extract_query_value(resolved_url, "__biz", "biz") or decode_extracted_value(
+        extract_js_value(page_html, "biz")
+    )
+    appmsgid = extract_query_value(resolved_url, "mid", "appmsgid") or decode_extracted_value(
+        extract_js_value(page_html, "appmsgid")
+    )
+    itemidx = parse_int(extract_query_value(resolved_url, "idx", "itemidx")) or parse_int(
+        extract_js_value(page_html, "idx")
+    )
+    if appmsgid and itemidx is None:
+        itemidx = 1
+
+    title = (
+        extract_meta_content(page_html, "og:title")
+        or decode_extracted_value(extract_js_value(page_html, "msg_title"))
+        or "未命名文章"
+    )
+    digest = extract_meta_content(page_html, "og:description") or decode_extracted_value(
+        extract_js_value(page_html, "msg_desc")
+    )
+    cover_url = extract_meta_content(page_html, "og:image") or decode_extracted_value(
+        extract_js_value(page_html, "msg_cdn_url")
+    )
+
+    return {
+        "source": {
+            "name": extract_source_name(page_html) or "待识别公众号",
+            "alias": decode_extracted_value(extract_js_value(page_html, "user_name")),
+            "biz": biz,
+            "avatar_url": decode_extracted_value(extract_js_value(page_html, "round_head_img"))
+            or decode_extracted_value(extract_js_value(page_html, "head_img"))
+            or decode_extracted_value(extract_js_value(page_html, "ori_head_img")),
+        },
+        "article": {
+            "title": title,
+            "author": extract_meta_content(page_html, "og:article:author")
+            or decode_extracted_value(extract_js_value(page_html, "author")),
+            "digest": digest,
+            "cover_url": cover_url,
+            "original_url": resolved_url,
+            "publish_time": parse_article_publish_time(page_html),
+            "msgid": appmsgid,
+            "idx": itemidx,
+            "biz": biz,
+            "appmsgid": appmsgid,
+            "itemidx": itemidx,
+            "raw_data": {"article_url": resolved_url, "source": "article_url"},
+        },
+    }
+
+
+async def fetch_article_metadata_from_url(
+    article_url: str,
+    cookies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    parsed = urlparse(article_url)
+    if parsed.netloc not in {"mp.weixin.qq.com", "mp.weixin.qq.com.cn"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请粘贴 mp.weixin.qq.com 的公众号文章链接。",
+        )
+
+    try:
+        async with httpx.AsyncClient(
+            headers=article_headers(cookies),
+            timeout=httpx.Timeout(25.0, connect=10.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(article_url)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="读取文章链接失败，请检查链接是否可访问。",
+        ) from exc
+
+    return parse_article_from_html(str(response.url), response.text)
+
+
+async def get_or_create_paused_source_for_article(
+    db: AsyncSession,
+    user: User,
+    wechat_account_id: UUID,
+    source_data: dict[str, Any],
+    article_url: str,
+) -> WechatSource:
+    biz = source_data.get("biz")
+    if not biz:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="文章链接中没有解析到公众号 biz。",
+        )
+
+    result = await db.execute(
+        select(WechatSource).where(
+            WechatSource.user_id == user.id,
+            WechatSource.biz == biz,
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        source = WechatSource(
+            user_id=user.id,
+            wechat_account_id=wechat_account_id,
+            name=source_data.get("name") or "待识别公众号",
+            alias=source_data.get("alias"),
+            biz=biz,
+            avatar_url=source_data.get("avatar_url"),
+            source_from=SourceFrom.ARTICLE_URL,
+            status=SourceStatus.PAUSED,
+            raw_data={"article_url": article_url},
+        )
+        db.add(source)
+        await db.flush()
+    else:
+        source.wechat_account_id = wechat_account_id
+        source.name = source_data.get("name") or source.name
+        source.alias = source_data.get("alias") or source.alias
+        source.avatar_url = source_data.get("avatar_url") or source.avatar_url
+        source.deleted_at = None
+        if source.status == SourceStatus.FAILED:
+            source.status = SourceStatus.PAUSED
+        source.raw_data = {**(source.raw_data or {}), "article_url": article_url}
+
+    await cache_source_avatar(source)
+    return source
+
+
+async def find_existing_article(
+    db: AsyncSession,
+    user: User,
+    source: WechatSource,
+    article_data: dict[str, Any],
+) -> Article | None:
+    appmsgid = article_data.get("appmsgid")
+    itemidx = article_data.get("itemidx")
+    if appmsgid and itemidx is not None:
+        result = await db.execute(
+            select(Article).where(
+                Article.user_id == user.id,
+                Article.source_id == source.id,
+                Article.appmsgid == appmsgid,
+                Article.itemidx == itemidx,
+            )
+        )
+        article = result.scalar_one_or_none()
+        if article is not None:
+            return article
+
+    result = await db.execute(
+        select(Article).where(
+            Article.user_id == user.id,
+            Article.original_url == article_data["original_url"],
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_user_article(
@@ -310,6 +548,82 @@ async def create_article_task(
     await db.commit()
     await db.refresh(task)
     return task
+
+
+@router.post("/from-url", response_model=ArticleFromUrlResponse)
+async def create_article_from_url(
+    payload: ArticleFromUrlRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ArticleFromUrlResponse:
+    try:
+        account, _, cookies, _ = await get_active_authorized_session(db, current_user)
+    except SourceServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    metadata = await fetch_article_metadata_from_url(payload.article_url.strip(), cookies)
+    source = await get_or_create_paused_source_for_article(
+        db,
+        current_user,
+        account.id,
+        metadata["source"],
+        metadata["article"]["original_url"],
+    )
+    article_data = metadata["article"]
+    existing_article = await find_existing_article(db, current_user, source, article_data)
+    if existing_article is not None:
+        await db.commit()
+        existing_source = source
+        if existing_article.source_id != source.id:
+            source_result = await db.execute(
+                select(WechatSource).where(WechatSource.id == existing_article.source_id)
+            )
+            existing_source = source_result.scalar_one_or_none() or source
+        return ArticleFromUrlResponse(
+            status="existing",
+            article=serialize_article(existing_article, existing_source),
+        )
+
+    article = Article(
+        user_id=current_user.id,
+        source_id=source.id,
+        wechat_account_id=account.id,
+        title=article_data["title"],
+        author=article_data["author"],
+        digest=article_data["digest"],
+        cover_url=article_data["cover_url"],
+        original_url=article_data["original_url"],
+        publish_time=article_data["publish_time"],
+        msgid=article_data["msgid"],
+        idx=article_data["idx"],
+        biz=article_data["biz"],
+        appmsgid=article_data["appmsgid"],
+        itemidx=article_data["itemidx"],
+        content_status=FetchStatus.PENDING,
+        raw_data=article_data["raw_data"],
+    )
+    db.add(article)
+    await db.flush()
+    await cache_article_cover(article, cookies=cookies)
+    await db.commit()
+    await db.refresh(article)
+    await db.refresh(source)
+
+    task_id = None
+    if payload.fetch_content:
+        task = await create_article_task(
+            db,
+            current_user,
+            [article.id],
+            TaskType.FETCH_ARTICLE_CONTENT,
+        )
+        task_id = str(task.id)
+
+    return ArticleFromUrlResponse(
+        status="created",
+        article=serialize_article(article, source),
+        task_id=task_id,
+    )
 
 
 @router.post("/fetch-content")

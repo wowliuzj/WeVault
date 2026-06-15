@@ -9,6 +9,7 @@ import {
   getSourceAvatarUrl,
   type Article,
   type ArticleDetail,
+  type ArticleFromUrlResponse,
   type ArticleListResponse,
   type ArticleSummaryResponse,
   type CollectionTask,
@@ -163,6 +164,12 @@ const articleBatchDeleting = ref(false);
 const articleBatchRestoring = ref(false);
 const articleDetail = ref<ArticleDetail | null>(null);
 const articleViewLoadingId = ref("");
+const articleUrlModalOpen = ref(false);
+const articleUrlLoading = ref(false);
+const articleUrlForm = ref({
+  articleUrl: "",
+  fetchContent: true,
+});
 const instantArticleTask = ref<{
   taskId: string;
   articleTitle: string;
@@ -727,6 +734,65 @@ function toggleArticleExportMenu(article: Article) {
 
 function closeArticleExportMenu() {
   articleExportMenuId.value = "";
+}
+
+function openArticleUrlModal() {
+  if (!hasValidWechatAuthorization.value) {
+    showToast("error", "请先完成有效的微信公众号扫码授权");
+    return;
+  }
+  articleUrlForm.value = {
+    articleUrl: "",
+    fetchContent: true,
+  };
+  articleUrlModalOpen.value = true;
+}
+
+function closeArticleUrlModal() {
+  articleUrlModalOpen.value = false;
+}
+
+async function submitArticleUrl() {
+  if (!articleUrlForm.value.articleUrl.trim()) {
+    return;
+  }
+
+  articleUrlLoading.value = true;
+  try {
+    const response = await apiRequest<ArticleFromUrlResponse>("/articles/from-url", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        article_url: articleUrlForm.value.articleUrl.trim(),
+        fetch_content: articleUrlForm.value.fetchContent,
+      }),
+    });
+
+    if (response.status === "existing") {
+      showToast("success", "文章已存在");
+      closeArticleUrlModal();
+      return;
+    }
+
+    showToast(
+      "success",
+      response.task_id ? "文章已添加，正在抓取正文" : "文章已添加",
+    );
+    closeArticleUrlModal();
+    articleMode.value = "active";
+    articlePage.value = 1;
+    await loadSources();
+    await loadArticles();
+    await loadDashboardArticles();
+    if (response.task_id) {
+      await loadTasks();
+      startInstantArticleTaskPolling(response.task_id, response.article);
+    }
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "按链接添加文章失败");
+  } finally {
+    articleUrlLoading.value = false;
+  }
 }
 
 function openArticleFromList(article: Article) {
@@ -2347,6 +2413,15 @@ onBeforeUnmount(() => {
                   回收箱
                 </button>
               </div>
+              <button
+                v-if="!isArticleTrashMode"
+                class="primary-button"
+                type="button"
+                :disabled="!hasValidWechatAuthorization"
+                @click="openArticleUrlModal"
+              >
+                按链接添加
+              </button>
               <button class="ghost-button" type="button" :disabled="articleLoading" @click="loadArticles">
                 {{ articleLoading ? "刷新中..." : "刷新" }}
               </button>
@@ -3340,6 +3415,50 @@ onBeforeUnmount(() => {
             <span>{{ sourceArticleUrl }}</span>
           </div>
         </template>
+      </section>
+    </div>
+
+    <div v-if="articleUrlModalOpen" class="modal-backdrop">
+      <section
+        class="modal-dialog source-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="article-url-title"
+      >
+        <button class="modal-close" type="button" aria-label="关闭" @click="closeArticleUrlModal">
+          ×
+        </button>
+        <div class="modal-header">
+          <div>
+            <h2 id="article-url-title">按链接添加文章</h2>
+            <p>粘贴公众号文章链接，只保存这一篇；所属公众号会自动加入源列表并保持暂停。</p>
+          </div>
+        </div>
+        <form class="modal-form" @submit.prevent="submitArticleUrl">
+          <label>
+            <span>文章链接</span>
+            <input
+              v-model="articleUrlForm.articleUrl"
+              type="url"
+              autocomplete="off"
+              placeholder="https://mp.weixin.qq.com/s/..."
+            />
+          </label>
+          <label class="inline-checkbox-row">
+            <input v-model="articleUrlForm.fetchContent" type="checkbox" />
+            <span>抓取正文</span>
+          </label>
+          <div class="modal-actions">
+            <button class="ghost-button" type="button" @click="closeArticleUrlModal">取消</button>
+            <button
+              class="primary-button"
+              type="submit"
+              :disabled="articleUrlLoading || !articleUrlForm.articleUrl.trim()"
+            >
+              {{ articleUrlLoading ? "添加中..." : "添加文章" }}
+            </button>
+          </div>
+        </form>
       </section>
     </div>
 
