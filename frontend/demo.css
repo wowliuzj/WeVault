@@ -1647,6 +1647,16 @@ tr:last-child td {
   color: #ffffff;
 }
 
+.page-ellipsis {
+  display: inline-flex;
+  min-width: 22px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
 .filter-bar {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 180px 180px;

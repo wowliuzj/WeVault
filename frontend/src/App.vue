@@ -29,6 +29,9 @@ type ToastKind = "success" | "error";
 type SourceViewMode = "list" | "grid";
 type SourceModalMode = "search" | "url" | "task" | null;
 type ArticleLibraryMode = "active" | "trash";
+type PaginationItem =
+  | { type: "page"; key: string; page: number; label: string; active: boolean }
+  | { type: "ellipsis"; key: string; label: string };
 
 const views: Array<{ id: ViewId; label: string; icon: string; title: string; subtitle: string }> = [
   {
@@ -235,6 +238,9 @@ const activeSourceCount = computed(
 const sourcePageCount = computed(() =>
   Math.max(1, Math.ceil(sources.value.length / sourcePageSize.value)),
 );
+const sourcePaginationItems = computed(() =>
+  buildPaginationItems(sourcePage.value, sourcePageCount.value),
+);
 const paginatedSources = computed(() => {
   const page = Math.min(sourcePage.value, sourcePageCount.value);
   const start = (page - 1) * sourcePageSize.value;
@@ -242,6 +248,9 @@ const paginatedSources = computed(() => {
 });
 const taskPageCount = computed(() =>
   Math.max(1, Math.ceil(tasks.value.length / taskPageSize.value)),
+);
+const taskPaginationItems = computed(() =>
+  buildPaginationItems(taskPage.value, taskPageCount.value),
 );
 const paginatedTasks = computed(() => {
   const page = Math.min(taskPage.value, taskPageCount.value);
@@ -251,6 +260,9 @@ const paginatedTasks = computed(() => {
 const exportPageCount = computed(() =>
   Math.max(1, Math.ceil(exportJobs.value.length / exportPageSize.value)),
 );
+const exportPaginationItems = computed(() =>
+  buildPaginationItems(exportPage.value, exportPageCount.value),
+);
 const paginatedExports = computed(() => {
   const page = Math.min(exportPage.value, exportPageCount.value);
   const start = (page - 1) * exportPageSize.value;
@@ -258,6 +270,9 @@ const paginatedExports = computed(() => {
 });
 const articlePageCount = computed(() =>
   Math.max(1, Math.ceil(articleTotal.value / articlePageSize.value)),
+);
+const articlePaginationItems = computed(() =>
+  buildPaginationItems(articlePage.value, articlePageCount.value),
 );
 const selectedArticles = computed(() =>
   articles.value.filter((article) => selectedArticleIds.value.has(article.id)),
@@ -284,6 +299,63 @@ const articleEmptyLabel = computed(() =>
 const articleLoadingLabel = computed(() =>
   isArticleTrashMode.value ? "正在读取回收箱" : "正在读取文章库",
 );
+
+function buildPaginationItems(currentPage: number, totalPages: number): PaginationItem[] {
+  const total = Math.max(1, totalPages);
+  const current = Math.min(Math.max(currentPage, 1), total);
+
+  if (total <= 9) {
+    return Array.from({ length: total }, (_, index) => {
+      const page = index + 1;
+      return {
+        type: "page",
+        key: `page-${page}`,
+        page,
+        label: String(page),
+        active: page === current,
+      };
+    });
+  }
+
+  const pages = new Set<number>([1, total]);
+  const start = Math.max(2, current - 2);
+  const end = Math.min(total - 1, current + 2);
+  for (let page = start; page <= end; page += 1) {
+    pages.add(page);
+  }
+  if (current <= 4) {
+    for (let page = 2; page <= 5; page += 1) {
+      pages.add(page);
+    }
+  }
+  if (current >= total - 3) {
+    for (let page = total - 4; page < total; page += 1) {
+      pages.add(page);
+    }
+  }
+
+  const sortedPages = [...pages].sort((a, b) => a - b);
+  const items: PaginationItem[] = [];
+  let previous = 0;
+  for (const page of sortedPages) {
+    if (previous > 0 && page - previous > 1) {
+      items.push({
+        type: "ellipsis",
+        key: `ellipsis-${previous}-${page}`,
+        label: "...",
+      });
+    }
+    items.push({
+      type: "page",
+      key: `page-${page}`,
+      page,
+      label: String(page),
+      active: page === current,
+    });
+    previous = page;
+  }
+  return items;
+}
 
 function setSession(response: TokenResponse) {
   token.value = response.access_token;
@@ -2356,20 +2428,30 @@ onBeforeUnmount(() => {
                 class="link-button"
                 type="button"
                 :disabled="sourcePage <= 1"
+                @click="setSourcePage(1)"
+              >
+                <<
+              </button>
+              <button
+                class="link-button"
+                type="button"
+                :disabled="sourcePage <= 1"
                 @click="setSourcePage(sourcePage - 1)"
               >
                 上一页
               </button>
-              <button
-                v-for="page in sourcePageCount"
-                :key="page"
-                class="page-button"
-                :class="{ active: page === sourcePage }"
-                type="button"
-                @click="setSourcePage(page)"
-              >
-                {{ page }}
-              </button>
+              <template v-for="item in sourcePaginationItems" :key="item.key">
+                <button
+                  v-if="item.type === 'page'"
+                  class="page-button"
+                  :class="{ active: item.active }"
+                  type="button"
+                  @click="setSourcePage(item.page)"
+                >
+                  {{ item.label }}
+                </button>
+                <span v-else class="page-ellipsis">{{ item.label }}</span>
+              </template>
               <button
                 class="link-button"
                 type="button"
@@ -2377,6 +2459,14 @@ onBeforeUnmount(() => {
                 @click="setSourcePage(sourcePage + 1)"
               >
                 下一页
+              </button>
+              <button
+                class="link-button"
+                type="button"
+                :disabled="sourcePage >= sourcePageCount"
+                @click="setSourcePage(sourcePageCount)"
+              >
+                >>
               </button>
             </div>
           </div>
@@ -2801,20 +2891,30 @@ onBeforeUnmount(() => {
                   class="link-button"
                   type="button"
                   :disabled="articlePage <= 1"
+                  @click="setArticlePage(1)"
+                >
+                  <<
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="articlePage <= 1"
                   @click="setArticlePage(articlePage - 1)"
                 >
                   上一页
                 </button>
-                <button
-                  v-for="page in articlePageCount"
-                  :key="page"
-                  class="page-button"
-                  :class="{ active: page === articlePage }"
-                  type="button"
-                  @click="setArticlePage(page)"
-                >
-                  {{ page }}
-                </button>
+                <template v-for="item in articlePaginationItems" :key="item.key">
+                  <button
+                    v-if="item.type === 'page'"
+                    class="page-button"
+                    :class="{ active: item.active }"
+                    type="button"
+                    @click="setArticlePage(item.page)"
+                  >
+                    {{ item.label }}
+                  </button>
+                  <span v-else class="page-ellipsis">{{ item.label }}</span>
+                </template>
                 <button
                   class="link-button"
                   type="button"
@@ -2822,6 +2922,14 @@ onBeforeUnmount(() => {
                   @click="setArticlePage(articlePage + 1)"
                 >
                   下一页
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="articlePage >= articlePageCount"
+                  @click="setArticlePage(articlePageCount)"
+                >
+                  >>
                 </button>
               </div>
             </div>
@@ -2971,20 +3079,30 @@ onBeforeUnmount(() => {
                   class="link-button"
                   type="button"
                   :disabled="taskPage <= 1"
+                  @click="setTaskPage(1)"
+                >
+                  <<
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="taskPage <= 1"
                   @click="setTaskPage(taskPage - 1)"
                 >
                   上一页
                 </button>
-                <button
-                  v-for="page in taskPageCount"
-                  :key="page"
-                  class="page-button"
-                  :class="{ active: page === taskPage }"
-                  type="button"
-                  @click="setTaskPage(page)"
-                >
-                  {{ page }}
-                </button>
+                <template v-for="item in taskPaginationItems" :key="item.key">
+                  <button
+                    v-if="item.type === 'page'"
+                    class="page-button"
+                    :class="{ active: item.active }"
+                    type="button"
+                    @click="setTaskPage(item.page)"
+                  >
+                    {{ item.label }}
+                  </button>
+                  <span v-else class="page-ellipsis">{{ item.label }}</span>
+                </template>
                 <button
                   class="link-button"
                   type="button"
@@ -2992,6 +3110,14 @@ onBeforeUnmount(() => {
                   @click="setTaskPage(taskPage + 1)"
                 >
                   下一页
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="taskPage >= taskPageCount"
+                  @click="setTaskPage(taskPageCount)"
+                >
+                  >>
                 </button>
               </div>
             </div>
@@ -3108,20 +3234,30 @@ onBeforeUnmount(() => {
                   class="link-button"
                   type="button"
                   :disabled="exportPage <= 1"
+                  @click="setExportPage(1)"
+                >
+                  <<
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="exportPage <= 1"
                   @click="setExportPage(exportPage - 1)"
                 >
                   上一页
                 </button>
-                <button
-                  v-for="page in exportPageCount"
-                  :key="page"
-                  class="page-button"
-                  :class="{ active: page === exportPage }"
-                  type="button"
-                  @click="setExportPage(page)"
-                >
-                  {{ page }}
-                </button>
+                <template v-for="item in exportPaginationItems" :key="item.key">
+                  <button
+                    v-if="item.type === 'page'"
+                    class="page-button"
+                    :class="{ active: item.active }"
+                    type="button"
+                    @click="setExportPage(item.page)"
+                  >
+                    {{ item.label }}
+                  </button>
+                  <span v-else class="page-ellipsis">{{ item.label }}</span>
+                </template>
                 <button
                   class="link-button"
                   type="button"
@@ -3129,6 +3265,14 @@ onBeforeUnmount(() => {
                   @click="setExportPage(exportPage + 1)"
                 >
                   下一页
+                </button>
+                <button
+                  class="link-button"
+                  type="button"
+                  :disabled="exportPage >= exportPageCount"
+                  @click="setExportPage(exportPageCount)"
+                >
+                  >>
                 </button>
               </div>
             </div>
