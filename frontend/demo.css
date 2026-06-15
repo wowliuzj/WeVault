@@ -1614,7 +1614,16 @@ tr:last-child td {
   gap: 8px;
 }
 
-.source-pagination select {
+.pagination-controls,
+.page-jump-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-pagination select,
+.page-jump-form input {
   min-height: 32px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -1623,15 +1632,62 @@ tr:last-child td {
   color: var(--text);
 }
 
+.page-jump-form input {
+  width: 64px;
+  text-align: center;
+}
+
 .pagination-links {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding-bottom: 2px;
+}
+
+.pagination-nav {
+  display: contents;
+}
+
+.pagination-nav-side {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.pagination-nav-side:first-child {
+  order: 1;
+}
+
+.pagination-nav-side:last-child {
+  order: 3;
+}
+
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  order: 2;
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.pagination-links .link-button,
+.pagination-links .page-ellipsis {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .page-button {
+  flex: 0 0 auto;
   min-width: 30px;
   height: 30px;
   border: 1px solid var(--line-strong);
@@ -2076,6 +2132,37 @@ progress {
   .source-pagination {
     align-items: flex-start;
     flex-direction: column;
+    width: 100%;
+  }
+
+  .pagination-controls {
+    width: 100%;
+  }
+
+  .pagination-links {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    overflow: visible;
+  }
+
+  .pagination-nav {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .pagination-pages {
+    width: 100%;
+    justify-content: center;
+    overflow-x: auto;
+  }
+
+  .pagination-nav-side {
+    gap: 8px;
   }
 
   .task-table-wrap,
@@ -2126,10 +2213,6 @@ progress {
     flex-wrap: wrap;
     white-space: normal;
     margin-top: 10px;
-  }
-
-  .pagination-links {
-    justify-content: flex-start;
   }
 
   .modal-result-item {

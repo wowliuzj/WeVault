@@ -130,6 +130,7 @@ const sourceSearchSubmitted = ref(false);
 const sourceUrlSubmitted = ref(false);
 const sourcePage = ref(1);
 const sourcePageSize = ref(10);
+const sourcePageJump = ref("");
 const sourceOperatingId = ref("");
 const brokenSourceAvatars = ref<Set<string>>(new Set());
 const selectedTaskSource = ref<WechatSource | null>(null);
@@ -138,11 +139,13 @@ const taskSubmitting = ref(false);
 const tasks = ref<CollectionTask[]>([]);
 const taskPage = ref(1);
 const taskPageSize = ref(10);
+const taskPageJump = ref("");
 const exportJobs = ref<ExportJob[]>([]);
 const exportLoading = ref(false);
 const exportSubmitting = ref(false);
 const exportPage = ref(1);
 const exportPageSize = ref(10);
+const exportPageJump = ref("");
 const articleExportMenuId = ref("");
 const pendingDownloadExportIds = ref<Set<string>>(new Set());
 const exportForm = ref({
@@ -159,6 +162,7 @@ const articles = ref<Article[]>([]);
 const articleTotal = ref(0);
 const articlePage = ref(1);
 const articlePageSize = ref(20);
+const articlePageJump = ref("");
 const articleKeyword = ref("");
 const articleSourceId = ref("");
 const selectedArticleIds = ref<Set<string>>(new Set());
@@ -706,6 +710,61 @@ function setArticlePageSize(event: Event) {
   articlePageSize.value = Number(target.value);
   articlePage.value = 1;
   void loadArticles();
+}
+
+function onlyPageDigits(event: Event, kind: "source" | "article" | "task" | "export") {
+  const input = event.target as HTMLInputElement;
+  const value = input.value.replace(/\D/g, "");
+  input.value = value;
+  if (kind === "source") {
+    sourcePageJump.value = value;
+  } else if (kind === "article") {
+    articlePageJump.value = value;
+  } else if (kind === "task") {
+    taskPageJump.value = value;
+  } else {
+    exportPageJump.value = value;
+  }
+}
+
+function jumpToSourcePage() {
+  const page = Number(sourcePageJump.value);
+  if (!Number.isInteger(page) || page < 1 || page > sourcePageCount.value) {
+    showToast("error", `请输入 1-${sourcePageCount.value} 之间的页码`);
+    return;
+  }
+  setSourcePage(page);
+  sourcePageJump.value = "";
+}
+
+function jumpToArticlePage() {
+  const page = Number(articlePageJump.value);
+  if (!Number.isInteger(page) || page < 1 || page > articlePageCount.value) {
+    showToast("error", `请输入 1-${articlePageCount.value} 之间的页码`);
+    return;
+  }
+  setArticlePage(page);
+  articlePageJump.value = "";
+}
+
+function jumpToTaskPage() {
+  const page = Number(taskPageJump.value);
+  if (!Number.isInteger(page) || page < 1 || page > taskPageCount.value) {
+    showToast("error", `请输入 1-${taskPageCount.value} 之间的页码`);
+    return;
+  }
+  setTaskPage(page);
+  taskPageJump.value = "";
+}
+
+function jumpToExportPage() {
+  const page = Number(exportPageJump.value);
+  if (!Number.isInteger(page) || page < 1 || page > exportPageCount.value) {
+    showToast("error", `请输入 1-${exportPageCount.value} 之间的页码`);
+    return;
+  }
+  setExportPage(page);
+  exportPageJump.value = "";
 }
 
 function searchArticles() {
@@ -2415,59 +2474,82 @@ onBeforeUnmount(() => {
             </article>
           </div>
           <div v-if="sources.length > 0" class="source-pagination">
-            <label>
-              <span>每页</span>
-              <select :value="sourcePageSize" @change="setSourcePageSize">
-                <option :value="10">10</option>
-                <option :value="20">20</option>
-                <option :value="50">50</option>
-              </select>
-            </label>
+            <div class="pagination-controls">
+              <label>
+                <span>每页</span>
+                <select :value="sourcePageSize" @change="setSourcePageSize">
+                  <option :value="10">10</option>
+                  <option :value="20">20</option>
+                  <option :value="50">50</option>
+                </select>
+              </label>
+              <form class="page-jump-form" @submit.prevent="jumpToSourcePage">
+                <span>跳至</span>
+                <input
+                  v-model="sourcePageJump"
+                  type="text"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  :placeholder="String(sourcePage)"
+                  @input="onlyPageDigits($event, 'source')"
+                />
+                <span>页</span>
+                <button class="link-button" type="submit">跳转</button>
+              </form>
+            </div>
             <div class="pagination-links">
-              <button
-                class="link-button"
-                type="button"
-                :disabled="sourcePage <= 1"
-                @click="setSourcePage(1)"
-              >
-                <<
-              </button>
-              <button
-                class="link-button"
-                type="button"
-                :disabled="sourcePage <= 1"
-                @click="setSourcePage(sourcePage - 1)"
-              >
-                上一页
-              </button>
-              <template v-for="item in sourcePaginationItems" :key="item.key">
-                <button
-                  v-if="item.type === 'page'"
-                  class="page-button"
-                  :class="{ active: item.active }"
-                  type="button"
-                  @click="setSourcePage(item.page)"
-                >
-                  {{ item.label }}
-                </button>
-                <span v-else class="page-ellipsis">{{ item.label }}</span>
-              </template>
-              <button
-                class="link-button"
-                type="button"
-                :disabled="sourcePage >= sourcePageCount"
-                @click="setSourcePage(sourcePage + 1)"
-              >
-                下一页
-              </button>
-              <button
-                class="link-button"
-                type="button"
-                :disabled="sourcePage >= sourcePageCount"
-                @click="setSourcePage(sourcePageCount)"
-              >
-                >>
-              </button>
+              <div class="pagination-nav">
+                <span class="pagination-nav-side">
+                  <button
+                    class="link-button"
+                    type="button"
+                    :disabled="sourcePage <= 1"
+                    @click="setSourcePage(1)"
+                  >
+                    <<
+                  </button>
+                  <button
+                    class="link-button"
+                    type="button"
+                    :disabled="sourcePage <= 1"
+                    @click="setSourcePage(sourcePage - 1)"
+                  >
+                    上一页
+                  </button>
+                </span>
+                <span class="pagination-nav-side">
+                  <button
+                    class="link-button"
+                    type="button"
+                    :disabled="sourcePage >= sourcePageCount"
+                    @click="setSourcePage(sourcePage + 1)"
+                  >
+                    下一页
+                  </button>
+                  <button
+                    class="link-button"
+                    type="button"
+                    :disabled="sourcePage >= sourcePageCount"
+                    @click="setSourcePage(sourcePageCount)"
+                  >
+                    >>
+                  </button>
+                </span>
+              </div>
+              <div class="pagination-pages">
+                <template v-for="item in sourcePaginationItems" :key="item.key">
+                  <button
+                    v-if="item.type === 'page'"
+                    class="page-button"
+                    :class="{ active: item.active }"
+                    type="button"
+                    @click="setSourcePage(item.page)"
+                  >
+                    {{ item.label }}
+                  </button>
+                  <span v-else class="page-ellipsis">{{ item.label }}</span>
+                </template>
+              </div>
             </div>
           </div>
         </section>
@@ -2878,59 +2960,82 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="source-pagination">
-              <label>
-                <span>每页</span>
-                <select :value="articlePageSize" @change="setArticlePageSize">
-                  <option :value="10">10</option>
-                  <option :value="20">20</option>
-                  <option :value="50">50</option>
-                </select>
-              </label>
+              <div class="pagination-controls">
+                <label>
+                  <span>每页</span>
+                  <select :value="articlePageSize" @change="setArticlePageSize">
+                    <option :value="10">10</option>
+                    <option :value="20">20</option>
+                    <option :value="50">50</option>
+                  </select>
+                </label>
+                <form class="page-jump-form" @submit.prevent="jumpToArticlePage">
+                  <span>跳至</span>
+                  <input
+                    v-model="articlePageJump"
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    :placeholder="String(articlePage)"
+                    @input="onlyPageDigits($event, 'article')"
+                  />
+                  <span>页</span>
+                  <button class="link-button" type="submit">跳转</button>
+                </form>
+              </div>
               <div class="pagination-links">
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="articlePage <= 1"
-                  @click="setArticlePage(1)"
-                >
-                  <<
-                </button>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="articlePage <= 1"
-                  @click="setArticlePage(articlePage - 1)"
-                >
-                  上一页
-                </button>
-                <template v-for="item in articlePaginationItems" :key="item.key">
-                  <button
-                    v-if="item.type === 'page'"
-                    class="page-button"
-                    :class="{ active: item.active }"
-                    type="button"
-                    @click="setArticlePage(item.page)"
-                  >
-                    {{ item.label }}
-                  </button>
-                  <span v-else class="page-ellipsis">{{ item.label }}</span>
-                </template>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="articlePage >= articlePageCount"
-                  @click="setArticlePage(articlePage + 1)"
-                >
-                  下一页
-                </button>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="articlePage >= articlePageCount"
-                  @click="setArticlePage(articlePageCount)"
-                >
-                  >>
-                </button>
+                <div class="pagination-nav">
+                  <span class="pagination-nav-side">
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="articlePage <= 1"
+                      @click="setArticlePage(1)"
+                    >
+                      <<
+                    </button>
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="articlePage <= 1"
+                      @click="setArticlePage(articlePage - 1)"
+                    >
+                      上一页
+                    </button>
+                  </span>
+                  <span class="pagination-nav-side">
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="articlePage >= articlePageCount"
+                      @click="setArticlePage(articlePage + 1)"
+                    >
+                      下一页
+                    </button>
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="articlePage >= articlePageCount"
+                      @click="setArticlePage(articlePageCount)"
+                    >
+                      >>
+                    </button>
+                  </span>
+                </div>
+                <div class="pagination-pages">
+                  <template v-for="item in articlePaginationItems" :key="item.key">
+                    <button
+                      v-if="item.type === 'page'"
+                      class="page-button"
+                      :class="{ active: item.active }"
+                      type="button"
+                      @click="setArticlePage(item.page)"
+                    >
+                      {{ item.label }}
+                    </button>
+                    <span v-else class="page-ellipsis">{{ item.label }}</span>
+                  </template>
+                </div>
               </div>
             </div>
           </template>
@@ -3066,59 +3171,82 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="source-pagination">
-              <label>
-                <span>每页</span>
-                <select :value="taskPageSize" @change="setTaskPageSize">
-                  <option :value="10">10</option>
-                  <option :value="20">20</option>
-                  <option :value="50">50</option>
-                </select>
-              </label>
+              <div class="pagination-controls">
+                <label>
+                  <span>每页</span>
+                  <select :value="taskPageSize" @change="setTaskPageSize">
+                    <option :value="10">10</option>
+                    <option :value="20">20</option>
+                    <option :value="50">50</option>
+                  </select>
+                </label>
+                <form class="page-jump-form" @submit.prevent="jumpToTaskPage">
+                  <span>跳至</span>
+                  <input
+                    v-model="taskPageJump"
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    :placeholder="String(taskPage)"
+                    @input="onlyPageDigits($event, 'task')"
+                  />
+                  <span>页</span>
+                  <button class="link-button" type="submit">跳转</button>
+                </form>
+              </div>
               <div class="pagination-links">
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="taskPage <= 1"
-                  @click="setTaskPage(1)"
-                >
-                  <<
-                </button>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="taskPage <= 1"
-                  @click="setTaskPage(taskPage - 1)"
-                >
-                  上一页
-                </button>
-                <template v-for="item in taskPaginationItems" :key="item.key">
-                  <button
-                    v-if="item.type === 'page'"
-                    class="page-button"
-                    :class="{ active: item.active }"
-                    type="button"
-                    @click="setTaskPage(item.page)"
-                  >
-                    {{ item.label }}
-                  </button>
-                  <span v-else class="page-ellipsis">{{ item.label }}</span>
-                </template>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="taskPage >= taskPageCount"
-                  @click="setTaskPage(taskPage + 1)"
-                >
-                  下一页
-                </button>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="taskPage >= taskPageCount"
-                  @click="setTaskPage(taskPageCount)"
-                >
-                  >>
-                </button>
+                <div class="pagination-nav">
+                  <span class="pagination-nav-side">
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="taskPage <= 1"
+                      @click="setTaskPage(1)"
+                    >
+                      <<
+                    </button>
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="taskPage <= 1"
+                      @click="setTaskPage(taskPage - 1)"
+                    >
+                      上一页
+                    </button>
+                  </span>
+                  <span class="pagination-nav-side">
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="taskPage >= taskPageCount"
+                      @click="setTaskPage(taskPage + 1)"
+                    >
+                      下一页
+                    </button>
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="taskPage >= taskPageCount"
+                      @click="setTaskPage(taskPageCount)"
+                    >
+                      >>
+                    </button>
+                  </span>
+                </div>
+                <div class="pagination-pages">
+                  <template v-for="item in taskPaginationItems" :key="item.key">
+                    <button
+                      v-if="item.type === 'page'"
+                      class="page-button"
+                      :class="{ active: item.active }"
+                      type="button"
+                      @click="setTaskPage(item.page)"
+                    >
+                      {{ item.label }}
+                    </button>
+                    <span v-else class="page-ellipsis">{{ item.label }}</span>
+                  </template>
+                </div>
               </div>
             </div>
           </template>
@@ -3221,59 +3349,82 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="source-pagination">
-              <label>
-                <span>每页</span>
-                <select :value="exportPageSize" @change="setExportPageSize">
-                  <option :value="10">10</option>
-                  <option :value="20">20</option>
-                  <option :value="50">50</option>
-                </select>
-              </label>
+              <div class="pagination-controls">
+                <label>
+                  <span>每页</span>
+                  <select :value="exportPageSize" @change="setExportPageSize">
+                    <option :value="10">10</option>
+                    <option :value="20">20</option>
+                    <option :value="50">50</option>
+                  </select>
+                </label>
+                <form class="page-jump-form" @submit.prevent="jumpToExportPage">
+                  <span>跳至</span>
+                  <input
+                    v-model="exportPageJump"
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    :placeholder="String(exportPage)"
+                    @input="onlyPageDigits($event, 'export')"
+                  />
+                  <span>页</span>
+                  <button class="link-button" type="submit">跳转</button>
+                </form>
+              </div>
               <div class="pagination-links">
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="exportPage <= 1"
-                  @click="setExportPage(1)"
-                >
-                  <<
-                </button>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="exportPage <= 1"
-                  @click="setExportPage(exportPage - 1)"
-                >
-                  上一页
-                </button>
-                <template v-for="item in exportPaginationItems" :key="item.key">
-                  <button
-                    v-if="item.type === 'page'"
-                    class="page-button"
-                    :class="{ active: item.active }"
-                    type="button"
-                    @click="setExportPage(item.page)"
-                  >
-                    {{ item.label }}
-                  </button>
-                  <span v-else class="page-ellipsis">{{ item.label }}</span>
-                </template>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="exportPage >= exportPageCount"
-                  @click="setExportPage(exportPage + 1)"
-                >
-                  下一页
-                </button>
-                <button
-                  class="link-button"
-                  type="button"
-                  :disabled="exportPage >= exportPageCount"
-                  @click="setExportPage(exportPageCount)"
-                >
-                  >>
-                </button>
+                <div class="pagination-nav">
+                  <span class="pagination-nav-side">
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="exportPage <= 1"
+                      @click="setExportPage(1)"
+                    >
+                      <<
+                    </button>
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="exportPage <= 1"
+                      @click="setExportPage(exportPage - 1)"
+                    >
+                      上一页
+                    </button>
+                  </span>
+                  <span class="pagination-nav-side">
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="exportPage >= exportPageCount"
+                      @click="setExportPage(exportPage + 1)"
+                    >
+                      下一页
+                    </button>
+                    <button
+                      class="link-button"
+                      type="button"
+                      :disabled="exportPage >= exportPageCount"
+                      @click="setExportPage(exportPageCount)"
+                    >
+                      >>
+                    </button>
+                  </span>
+                </div>
+                <div class="pagination-pages">
+                  <template v-for="item in exportPaginationItems" :key="item.key">
+                    <button
+                      v-if="item.type === 'page'"
+                      class="page-button"
+                      :class="{ active: item.active }"
+                      type="button"
+                      @click="setExportPage(item.page)"
+                    >
+                      {{ item.label }}
+                    </button>
+                    <span v-else class="page-ellipsis">{{ item.label }}</span>
+                  </template>
+                </div>
               </div>
             </div>
           </template>
