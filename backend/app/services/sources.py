@@ -154,6 +154,24 @@ def _serialize_source(
     }
 
 
+async def serialize_source_with_stats(db: AsyncSession, source: WechatSource) -> dict[str, Any]:
+    result = await db.execute(
+        select(
+            func.count(Article.id).label("article_count"),
+            func.max(Article.publish_time).label("last_article_at"),
+        ).where(
+            Article.source_id == source.id,
+            Article.deleted_at.is_(None),
+        )
+    )
+    article_count, last_article_at = result.one()
+    return _serialize_source(
+        source,
+        article_count=article_count,
+        last_article_at=last_article_at,
+    )
+
+
 async def get_active_authorized_session(
     db: AsyncSession,
     user: User,
@@ -334,7 +352,7 @@ async def add_source_from_search(
     await cache_source_avatar(source)
     await db.commit()
     await db.refresh(source)
-    return _serialize_source(source)
+    return await serialize_source_with_stats(db, source)
 
 
 async def add_source_from_article_url(
@@ -405,7 +423,7 @@ async def add_source_from_article_url(
     await cache_source_avatar(source)
     await db.commit()
     await db.refresh(source)
-    return _serialize_source(source)
+    return await serialize_source_with_stats(db, source)
 
 
 async def get_user_source(db: AsyncSession, user: User, source_id: str) -> WechatSource:
@@ -452,7 +470,7 @@ async def refresh_source_info(
     await cache_source_avatar(source)
     await db.commit()
     await db.refresh(source)
-    return _serialize_source(source)
+    return await serialize_source_with_stats(db, source)
 
 
 async def update_source_status(
@@ -467,7 +485,7 @@ async def update_source_status(
         source.auto_fetch_enabled = False
     await db.commit()
     await db.refresh(source)
-    return _serialize_source(source)
+    return await serialize_source_with_stats(db, source)
 
 
 async def update_source_auto_fetch(
@@ -484,7 +502,7 @@ async def update_source_auto_fetch(
     source.auto_fetch_enabled = enabled
     await db.commit()
     await db.refresh(source)
-    return _serialize_source(source)
+    return await serialize_source_with_stats(db, source)
 
 
 async def delete_source_tree(db: AsyncSession, user: User, source_id: str) -> None:
