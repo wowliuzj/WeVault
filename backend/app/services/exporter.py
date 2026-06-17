@@ -61,17 +61,19 @@ def export_storage_dir(job: ExportJob) -> Path:
 def article_markdown(article: Article, content: ArticleContent, source: WechatSource) -> str:
     markdown = content.markdown or content.plain_text or ""
     published = article.publish_time.isoformat() if article.publish_time else ""
-    parts = [
+    sections = [
         f"# {article.title}",
-        "",
-        f"- 公众号：{source.name}",
-        f"- 发布时间：{published or '未知'}",
-        f"- 原文：{article.original_url}",
-        "",
-        markdown.strip(),
-        "",
+        "\n".join(
+            [
+                f"- 公众号：{source.name}",
+                f"- 发布时间：{published or '未知'}",
+                f"- 原文：{article.original_url}",
+            ]
+        ),
     ]
-    return "\n".join(parts)
+    if markdown.strip():
+        sections.append(markdown.strip())
+    return "\n\n".join(sections).strip() + "\n"
 
 
 def article_plain_text(article: Article, content: ArticleContent, source: WechatSource) -> str:
@@ -160,6 +162,13 @@ def export_html(rows: list[tuple[Article, ArticleContent, WechatSource]]) -> str
         "img{max-width:100%;height:auto;}.cover{display:block;margin:0 0 20px;"
         "border-radius:8px;}h1{font-size:26px}.meta{color:#667085;font-size:13px;"
         "border-bottom:1px solid #e5e7eb;padding-bottom:12px}"
+        ".wevault-media-card{border:1px solid #d1d5db;border-radius:8px;"
+        "padding:14px 16px;margin:18px 0;background:#f9fafb;}"
+        ".wevault-media-label{display:inline-block;color:#047857;font-size:12px;"
+        "font-weight:700;margin-bottom:6px}.wevault-media-title{font-weight:700;"
+        "font-size:16px}.wevault-media-meta{color:#667085;font-size:13px}"
+        ".wevault-media-link{display:block;margin-top:8px;color:#2563eb;"
+        "overflow-wrap:anywhere}"
         "pre{white-space:pre-wrap}</style>"
         "</head><body>"
         + "\n".join(body)

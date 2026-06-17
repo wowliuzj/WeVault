@@ -42,13 +42,18 @@ class BrowserArticlePage(TypedDict):
     cookies: list[dict[str, Any]]
 
 
+class CleanArticleResult(TypedDict):
+    html: str
+    media: list[dict[str, Any]]
+
+
 class PlainTextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"br", "p", "div", "section", "li", "h1", "h2", "h3"}:
+        if tag in {"br", "p", "div", "section", "aside", "li", "h1", "h2", "h3"}:
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
@@ -226,11 +231,352 @@ def normalize_image_sources(content_html: str) -> str:
     )
 
 
-def clean_article_html(content_html: str) -> str:
-    html = normalize_image_sources(content_html)
+MEDIA_EXPLICIT_TAGS = (
+    "audio",
+    "iframe",
+    "mp-common-mpaudio",
+    "mp-common-mpvideo",
+    "mpvoice",
+    "mpvideo",
+    "qqmusic",
+    "video",
+)
+MEDIA_CONTAINER_MARKERS = (
+    "audio",
+    "insertvideo",
+    "js_editor_qqmusic",
+    "js_tx_video",
+    "mpaudio",
+    "mpvoice",
+    "mpvideo",
+    "music",
+    "qqmusic",
+    "video_iframe",
+    "wx_video",
+)
+MEDIA_TITLE_ATTRS = (
+    "data-title",
+    "data-songname",
+    "data-name",
+    "data-video-title",
+    "name",
+    "title",
+    "aria-label",
+    "songname",
+)
+MEDIA_ARTIST_ATTRS = (
+    "data-singer",
+    "data-artist",
+    "data-author",
+    "data-source",
+    "data-nickname",
+    "singer",
+    "artist",
+    "author",
+)
+MEDIA_COVER_ATTRS = (
+    "data-albumurl",
+    "data-cover",
+    "data-coverurl",
+    "data-headimgurl",
+    "data-img",
+    "data-thumb",
+    "poster",
+)
+MEDIA_SOURCE_ATTRS = (
+    "data-src",
+    "data-url",
+    "data-link",
+    "data-videourl",
+    "data-musicurl",
+    "href",
+    "src",
+)
+MEDIA_ID_ATTRS = (
+    "data-mid",
+    "data-musicid",
+    "data-vid",
+    "data-mpvid",
+    "musicid",
+    "vid",
+    "voice_encode_fileid",
+)
+MEDIA_BLOCK_TAGS = "|".join(re.escape(tag) for tag in MEDIA_EXPLICIT_TAGS)
+MEDIA_CONTAINER_PATTERN = "|".join(re.escape(marker) for marker in MEDIA_CONTAINER_MARKERS)
+MEDIA_EXPLICIT_BLOCK_RE = re.compile(
+    rf"<(?P<tag>{MEDIA_BLOCK_TAGS})\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+MEDIA_CONTAINER_BLOCK_RE = re.compile(
+    rf"<(?P<tag>section|div)\b(?P<attrs>[^>]*(?:{MEDIA_CONTAINER_PATTERN})[^>]*)>"
+    rf"(?P<body>.*?)</(?P=tag)>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+MEDIA_SELF_RE = re.compile(
+    rf"<(?P<tag>{MEDIA_BLOCK_TAGS})\b(?P<attrs>[^>]*)/?>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+ATTR_RE = re.compile(
+    r"(?P<name>[\w:-]+)(?:\s*=\s*(?:(?P<quote>[\"'])(?P<quoted>.*?)(?P=quote)|"
+    r"(?P<bare>[^\s\"'=<>`]+)))?",
+    flags=re.DOTALL,
+)
+
+
+def compact_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = unescape(value).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text or None
+
+
+def extract_attrs(attrs: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for match in ATTR_RE.finditer(attrs):
+        name = match.group("name").lower()
+        value = match.group("quoted") if match.group("quote") else match.group("bare")
+        values[name] = compact_text(value) or ""
+    return values
+
+
+def first_attr(attrs: dict[str, str], names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = compact_text(attrs.get(name))
+        if value:
+            return value
+    return None
+
+
+def extract_js_like_value(html: str, names: tuple[str, ...]) -> str | None:
+    value_html = unescape(html)
+    for name in names:
+        patterns = [
+            rf"[\"']{re.escape(name)}[\"']\s*:\s*(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
+            rf"\b{re.escape(name)}\s*=\s*(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, value_html, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                value = compact_text(decode_js_string(match.group("value")))
+                if value:
+                    return value
+    return None
+
+
+def media_url(article_url: str, value: str | None) -> str | None:
+    url = compact_text(value)
+    if not url or url.startswith(("data:", "javascript:")):
+        return None
+    if url.startswith("//"):
+        return f"https:{url}"
+    return urljoin(article_url, url) if article_url else url
+
+
+def detect_media_type(tag: str, attrs: dict[str, str], body: str) -> str:
+    blob = " ".join([tag, *attrs.keys(), *attrs.values(), body[:500]]).lower()
+    if any(marker in blob for marker in ("video", "mpvideo", "iframe", "vid")):
+        return "video"
+    if any(marker in blob for marker in ("audio", "music", "mpvoice", "qqmusic", "song")):
+        return "music"
+    return "media"
+
+
+def is_media_candidate(tag: str, attrs: dict[str, str], body: str) -> bool:
+    if tag.lower() in MEDIA_EXPLICIT_TAGS:
+        return True
+    blob = " ".join([tag, *attrs.keys(), *attrs.values(), body[:500]]).lower()
+    return any(marker in blob for marker in MEDIA_CONTAINER_MARKERS)
+
+
+def build_media_item(
+    tag: str,
+    attrs_text: str,
+    body: str,
+    *,
+    article_url: str,
+    position: str,
+) -> dict[str, Any] | None:
+    attrs = extract_attrs(attrs_text)
+    if not is_media_candidate(tag, attrs, body):
+        return None
+
+    body_text = compact_text(html_to_text(body))
+    media_type = detect_media_type(tag, attrs, body)
+    title = (
+        first_attr(attrs, MEDIA_TITLE_ATTRS)
+        or extract_js_like_value(body, ("songname", "title", "name", "video_title"))
+        or (body_text if body_text and len(body_text) <= 120 else None)
+    )
+    artist = first_attr(attrs, MEDIA_ARTIST_ATTRS) or extract_js_like_value(
+        body,
+        ("singer", "artist", "author", "source", "nickname"),
+    )
+    cover_url = media_url(
+        article_url,
+        first_attr(attrs, MEDIA_COVER_ATTRS)
+        or extract_js_like_value(body, ("albumurl", "cover", "cover_url", "poster")),
+    )
+    source_url = media_url(
+        article_url,
+        first_attr(attrs, MEDIA_SOURCE_ATTRS)
+        or extract_js_like_value(body, ("src", "url", "video_url", "music_url")),
+    )
+    media_id = first_attr(attrs, MEDIA_ID_ATTRS) or extract_js_like_value(
+        body,
+        ("musicid", "vid", "mpvid", "mid"),
+    )
+
+    if not any([title, artist, cover_url, source_url, media_id]):
+        return None
+
+    raw_attrs = {key: value for key, value in attrs.items() if value and len(value) <= 500}
+    if len(raw_attrs) > 20:
+        raw_attrs = dict(list(raw_attrs.items())[:20])
+
+    return {
+        "type": media_type,
+        "title": title,
+        "artist": artist,
+        "cover_url": cover_url,
+        "source_url": source_url or article_url,
+        "media_id": media_id,
+        "position": position,
+        "raw_attrs": raw_attrs,
+    }
+
+
+def media_signature(media: dict[str, Any]) -> str:
+    values = [
+        media.get("type"),
+        media.get("media_id"),
+        media.get("title"),
+        media.get("artist"),
+        media.get("source_url"),
+    ]
+    return "|".join(str(value or "").strip().lower() for value in values)
+
+
+def add_unique_media(items: list[dict[str, Any]], media: dict[str, Any]) -> None:
+    signature = media_signature(media)
+    if signature and all(media_signature(item) != signature for item in items):
+        items.append(media)
+
+
+def media_label(media_type: str) -> str:
+    return {"music": "音乐", "video": "视频"}.get(media_type, "媒体")
+
+
+def render_media_card(media: dict[str, Any], article_url: str) -> str:
+    label = media_label(str(media.get("type") or "media"))
+    title = compact_text(str(media.get("title") or "")) or f"未命名{label}"
+    artist = compact_text(str(media.get("artist") or ""))
+    source_url = compact_text(str(media.get("source_url") or "")) or article_url
+    meta_html = f'<div class="wevault-media-meta">{escape(artist)}</div>' if artist else ""
+    return (
+        f'<aside class="wevault-media-card" data-media-type="{escape(label, quote=True)}">'
+        f'<div class="wevault-media-label">{escape(label)}</div>'
+        f'<div class="wevault-media-title">{escape(title)}</div>'
+        f"{meta_html}"
+        f'<a class="wevault-media-link" href="{escape(source_url, quote=True)}" '
+        f'target="_blank" rel="noreferrer">打开原文播放：{escape(source_url)}</a>'
+        "</aside>"
+    )
+
+
+def replace_media_elements(content_html: str, article_url: str) -> tuple[str, list[dict[str, Any]]]:
+    media_items: list[dict[str, Any]] = []
+
+    def replace_block(match: re.Match[str]) -> str:
+        media = build_media_item(
+            match.group("tag"),
+            match.group("attrs"),
+            match.groupdict().get("body") or "",
+            article_url=article_url,
+            position="content",
+        )
+        if not media:
+            return match.group(0)
+        add_unique_media(media_items, media)
+        return render_media_card(media, article_url)
+
+    html = MEDIA_CONTAINER_BLOCK_RE.sub(replace_block, content_html)
+    html = MEDIA_EXPLICIT_BLOCK_RE.sub(replace_block, html)
+    html = MEDIA_SELF_RE.sub(replace_block, html)
+    return html, media_items
+
+
+def extract_page_media(raw_html: str, article_url: str) -> list[dict[str, Any]]:
+    media_items: list[dict[str, Any]] = []
+    for pattern in (MEDIA_CONTAINER_BLOCK_RE, MEDIA_EXPLICIT_BLOCK_RE, MEDIA_SELF_RE):
+        for match in pattern.finditer(raw_html):
+            media = build_media_item(
+                match.group("tag"),
+                match.group("attrs"),
+                match.groupdict().get("body") or "",
+                article_url=article_url,
+                position="page",
+            )
+            if media:
+                add_unique_media(media_items, media)
+            if len(media_items) >= 12:
+                return media_items
+
+    marker_re = re.compile(
+        r"songname|musicid|albumurl|qqmusic|mpvoice|mpaudio|mpvideo|video_iframe",
+        flags=re.IGNORECASE,
+    )
+    for match in marker_re.finditer(raw_html):
+        start = max(0, match.start() - 1600)
+        end = min(len(raw_html), match.end() + 3000)
+        media = build_media_item(
+            "script",
+            "",
+            raw_html[start:end],
+            article_url=article_url,
+            position="page",
+        )
+        if media:
+            add_unique_media(media_items, media)
+        if len(media_items) >= 12:
+            break
+    return media_items
+
+
+def clean_article_html_with_media(
+    content_html: str,
+    *,
+    raw_html: str | None,
+    article_url: str,
+) -> CleanArticleResult:
+    html, media_items = replace_media_elements(content_html, article_url)
+    if raw_html:
+        page_media = []
+        for media in extract_page_media(raw_html, article_url):
+            if all(media_signature(media) != media_signature(item) for item in media_items):
+                page_media.append(media)
+        if page_media:
+            html = "".join(render_media_card(media, article_url) for media in page_media) + html
+            media_items = page_media + media_items
+
+    html = normalize_image_sources(html)
     html = re.sub(r"\sstyle=(['\"]).*?\1", "", html, flags=re.IGNORECASE | re.DOTALL)
     html = re.sub(r"\son[a-z]+=(['\"]).*?\1", "", html, flags=re.IGNORECASE | re.DOTALL)
-    return html.strip()
+    return {"html": html.strip(), "media": media_items}
+
+
+def clean_article_html(content_html: str) -> str:
+    return clean_article_html_with_media(content_html, raw_html=None, article_url="")["html"]
+
+
+def manifest_media(media_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for item in media_items:
+        clean_item = {key: value for key, value in item.items() if value not in (None, "", {})}
+        result.append(clean_item)
+    return result
+
+
 
 
 async def cache_article_content_images(
@@ -444,7 +790,12 @@ async def fetch_article_content(
         if not content_html:
             raise ArticleFetchError("没有在文章页中找到正文内容。")
 
-        clean_html = clean_article_html(content_html)
+        clean_result = clean_article_html_with_media(
+            content_html,
+            raw_html=raw_html,
+            article_url=article.original_url,
+        )
+        clean_html = clean_result["html"]
         async with httpx.AsyncClient(
             headers=article_headers(fetch_cookies),
             timeout=httpx.Timeout(25.0, connect=10.0),
@@ -475,6 +826,7 @@ async def fetch_article_content(
             "source": "mp.weixin.qq.com",
             "fetched_by": "httpx",
             "assets": content_assets,
+            "media": manifest_media(clean_result["media"]),
         }
         content.fetched_at = datetime.now(UTC)
 

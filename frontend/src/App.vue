@@ -179,6 +179,7 @@ const articleUrlForm = ref({
 });
 const instantArticleTask = ref<{
   taskId: string;
+  articleId: string;
   articleTitle: string;
 } | null>(null);
 const taskForm = ref({
@@ -1144,6 +1145,31 @@ function viewOriginalArticle(article: Article) {
   window.open(article.original_url, "_blank", "noopener,noreferrer");
 }
 
+function replaceArticleInList(article: Article) {
+  let replaced = false;
+  articles.value = articles.value.map((item) => {
+    if (item.id !== article.id) {
+      return item;
+    }
+    replaced = true;
+    return article;
+  });
+  return replaced;
+}
+
+async function refreshArticleRow(articleId: string) {
+  try {
+    const detail = await apiRequest<ArticleDetail>(`/articles/${articleId}`, {
+      headers: authHeaders(),
+    });
+    if (!replaceArticleInList(detail)) {
+      await loadArticles();
+    }
+  } catch {
+    await loadArticles();
+  }
+}
+
 async function deleteArticle(article: Article) {
   const confirmed = window.confirm(`删除文章「${article.title}」？`);
   if (!confirmed) {
@@ -1305,6 +1331,7 @@ function startInstantArticleTaskPolling(
   stopInstantArticleTaskPolling();
   instantArticleTask.value = {
     taskId,
+    articleId: article.id,
     articleTitle: article.title,
   };
 
@@ -1330,17 +1357,19 @@ async function pollInstantArticleTask(taskId: string) {
       headers: authHeaders(),
     });
     if (task.status === "succeeded") {
+      const articleId = instantArticleTask.value.articleId;
       stopInstantArticleTaskPolling();
       instantArticleTask.value = null;
       showToast("success", "抓取完成");
-      await loadArticles();
+      await refreshArticleRow(articleId);
       await loadDashboardArticles();
       await loadTasks();
     } else if (["failed", "cancelled"].includes(task.status)) {
+      const articleId = instantArticleTask.value.articleId;
       stopInstantArticleTaskPolling();
       instantArticleTask.value = null;
       showToast("error", task.error_message || "抓取失败");
-      await loadArticles();
+      await refreshArticleRow(articleId);
       await loadDashboardArticles();
       await loadTasks();
     }
@@ -2858,10 +2887,9 @@ onBeforeUnmount(() => {
                       <button
                         class="link-button"
                         type="button"
-                        :disabled="articleViewLoadingId === article.id"
-                        @click="viewArticle(article)"
+                        @click="viewOriginalArticle(article)"
                       >
-                        {{ articleViewLoadingId === article.id ? "读取中..." : "查看" }}
+                        查看原文
                       </button>
                       <div class="inline-export-menu">
                         <button
@@ -2981,10 +3009,9 @@ onBeforeUnmount(() => {
                     <button
                       class="link-button"
                       type="button"
-                      :disabled="articleViewLoadingId === article.id"
-                      @click="viewArticle(article)"
+                      @click="viewOriginalArticle(article)"
                     >
-                      {{ articleViewLoadingId === article.id ? "读取中..." : "查看" }}
+                      查看原文
                     </button>
                     <div class="inline-export-menu">
                       <button

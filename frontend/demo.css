@@ -957,6 +957,40 @@ tr:last-child td {
   color: var(--accent);
 }
 
+.article-detail-body .wevault-media-card {
+  display: grid;
+  gap: 6px;
+  margin: 18px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.article-detail-body .wevault-media-label {
+  width: fit-content;
+  color: #047857;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.article-detail-body .wevault-media-title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.article-detail-body .wevault-media-meta {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.article-detail-body .wevault-media-link {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .article-detail-text {
   margin: 0;
   white-space: pre-wrap;
