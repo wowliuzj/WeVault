@@ -197,6 +197,22 @@ Supported queue names:
 - `fetch`: consume collection/content-fetch tasks
 - `export`: consume export tasks
 
+Automatic source collection is part of the long-running worker, not a separate
+cron job. Workers running with `all` or `fetch` check enabled public account
+sources once per day after 03:00 server local time. Each eligible source gets a
+normal `fetch_source_articles` task with:
+
+- `range`: `custom`
+- `start_date`: server local date minus 2 days
+- `end_date`: server local date
+- `limit`: `0`
+- `skip_existing`: `true`
+- `trigger`: `auto`
+
+The task reuses the source's `auto_fetch_content` setting. If the user's active
+WeChat authorization is expired or invalid, automatic collection is disabled for
+that source instead of repeatedly creating failing tasks.
+
 Current supported worker handler:
 
 - `fetch_source_articles`: fetches the article list for one public account

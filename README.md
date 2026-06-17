@@ -73,6 +73,15 @@ The poll interval, default queue, and default concurrency are controlled by
 `WORKER_POLL_INTERVAL_SECONDS`, `WORKER_QUEUE`, and `WORKER_CONCURRENCY` in
 `backend/.env`.
 
+Automatic source collection does not require `crontab`. When the worker runs
+with `--queue all` or `--queue fetch`, it checks enabled public account sources
+once per day after 03:00 server local time. For each active source with
+automatic collection enabled, the worker creates a normal `fetch_source_articles`
+task for the last 2 days, skips existing articles, and uses the source's
+`auto_fetch_content` setting to decide whether to fetch article正文. If the active
+WeChat authorization session is expired or invalid, automatic collection is
+disabled for that source.
+
 For local debugging, the worker prints task lifecycle messages to the console,
 including whether a pending task was found, which task was selected, article
 list page requests, saved article counts, cancellation, success, and failure
