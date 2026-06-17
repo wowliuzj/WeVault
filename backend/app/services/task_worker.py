@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.article import Article, ArticleContent
-from app.models.enums import FetchStatus, TaskStatus, TaskType
+from app.models.enums import FetchStatus, SourceStatus, TaskStatus, TaskType
 from app.models.export import ExportJob
 from app.models.task import CollectionTask
 from app.models.user import User
@@ -22,7 +22,7 @@ from app.services.article_assets import cache_article_cover
 from app.services.article_fetcher import fetch_article_content
 from app.services.export_cleanup import cleanup_expired_exports
 from app.services.exporter import run_export_job
-from app.services.sources import get_active_authorized_session
+from app.services.sources import SourceServiceError, get_active_authorized_session
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
 
 
@@ -111,6 +111,7 @@ async def run_task(task_id: UUID, *, worker_name: str) -> None:
                 task.error_message = str(exc) or "任务执行失败"
                 task.finished_at = datetime.now(UTC)
                 await sync_export_failure(db, task, task.error_message)
+                await disable_auto_fetch_on_auth_failure(db, task, exc)
                 await db.commit()
                 log(f"worker={worker_name} run task={task_id} failed error={task.error_message}")
 
@@ -454,6 +455,56 @@ async def sync_export_failure(
     job.finished_at = datetime.now(UTC)
 
 
+async def disable_auto_fetch_on_auth_failure(
+    db: AsyncSession,
+    task: CollectionTask,
+    exc: Exception,
+) -> None:
+    payload = task.payload or {}
+    if payload.get("trigger") != "auto":
+        return
+    if task.task_type != TaskType.FETCH_SOURCE_ARTICLES:
+        return
+    if not isinstance(exc, SourceServiceError) and not _looks_like_auth_failure(str(exc)):
+        return
+    source_id = payload.get("source_id")
+    if not source_id:
+        return
+
+    result = await db.execute(
+        select(WechatSource).where(
+            WechatSource.id == UUID(str(source_id)),
+            WechatSource.user_id == task.user_id,
+            WechatSource.deleted_at.is_(None),
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        return
+    if isinstance(exc, SourceServiceError) and not _looks_like_auth_failure(str(exc)):
+        return
+    source.auto_fetch_enabled = False
+    log(f"task={task.id} disabled source auto fetch source={source.id} reason={exc}")
+
+
+def _looks_like_auth_failure(message: str) -> bool:
+    text = message.lower()
+    return any(
+        keyword in text
+        for keyword in (
+            "授权",
+            "token",
+            "cookie",
+            "登录态",
+            "扫码",
+            "session",
+            "invalid",
+            "expired",
+            "过期",
+        )
+    )
+
+
 async def upsert_article(
     db: AsyncSession,
     source: WechatSource,
@@ -559,6 +610,101 @@ async def run_export_cleanup_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def schedule_auto_fetch_sources() -> int:
+    now = datetime.now().astimezone()
+    scheduled_count = 0
+    changed_count = 0
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(WechatSource)
+            .where(
+                WechatSource.status == SourceStatus.ACTIVE,
+                WechatSource.auto_fetch_enabled.is_(True),
+                WechatSource.deleted_at.is_(None),
+            )
+            .order_by(WechatSource.updated_at.asc())
+        )
+        sources = list(result.scalars().all())
+        for source in sources:
+            user = await load_user(db, source.user_id)
+            try:
+                await get_active_authorized_session(db, user)
+            except SourceServiceError as exc:
+                source.auto_fetch_enabled = False
+                changed_count += 1
+                log(f"auto fetch disabled source={source.id} reason={exc}")
+                continue
+
+            if source.auto_fetch_last_scheduled_at is not None:
+                last_scheduled_date = source.auto_fetch_last_scheduled_at.astimezone().date()
+                if last_scheduled_date >= now.date():
+                    continue
+
+            pending_result = await db.execute(
+                select(CollectionTask.id)
+                .where(
+                    CollectionTask.user_id == source.user_id,
+                    CollectionTask.task_type == TaskType.FETCH_SOURCE_ARTICLES,
+                    CollectionTask.target_type == "wechat_source",
+                    CollectionTask.target_id == source.id,
+                    CollectionTask.status.in_((TaskStatus.PENDING, TaskStatus.RUNNING)),
+                )
+                .limit(1)
+            )
+            if pending_result.scalar_one_or_none() is not None:
+                source.auto_fetch_last_scheduled_at = now
+                changed_count += 1
+                continue
+
+            db.add(
+                CollectionTask(
+                    user_id=source.user_id,
+                    task_type=TaskType.FETCH_SOURCE_ARTICLES,
+                    status=TaskStatus.PENDING,
+                    progress_current=0,
+                    progress_total=0,
+                    retry_count=0,
+                    target_type="wechat_source",
+                    target_id=source.id,
+                    payload={
+                        "source_id": str(source.id),
+                        "range": "custom",
+                        "start_date": (now.date() - timedelta(days=2)).isoformat(),
+                        "end_date": now.date().isoformat(),
+                        "limit": 0,
+                        "fetch_content": source.auto_fetch_content,
+                        "skip_existing": True,
+                        "run_mode": "immediate",
+                        "trigger": "auto",
+                    },
+                )
+            )
+            source.auto_fetch_last_scheduled_at = now
+            scheduled_count += 1
+            changed_count += 1
+
+        if changed_count:
+            await db.commit()
+    return scheduled_count
+
+
+async def run_auto_fetch_scheduler_loop() -> None:
+    while True:
+        now = datetime.now().astimezone()
+        if now.hour >= 3:
+            try:
+                scheduled_count = await schedule_auto_fetch_sources()
+                if scheduled_count:
+                    log(f"auto fetch scheduled tasks={scheduled_count}")
+            except Exception as exc:
+                log(f"auto fetch scheduler failed error={exc}")
+
+        next_check = datetime.combine(now.date(), time(hour=3), tzinfo=now.tzinfo)
+        if now >= next_check:
+            next_check += timedelta(days=1)
+        await asyncio.sleep(max(60.0, (next_check - now).total_seconds()))
+
+
 async def run_worker_loop(
     poll_interval: float,
     *,
@@ -579,4 +725,6 @@ async def run_worker_loop(
         for slot in range(1, worker_count + 1)
     ]
     slots.append(asyncio.create_task(run_export_cleanup_loop()))
+    if queue in {"all", "fetch"}:
+        slots.append(asyncio.create_task(run_auto_fetch_scheduler_loop()))
     await asyncio.gather(*slots)

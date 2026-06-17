@@ -145,6 +145,8 @@ def _serialize_source(
         "source_from": source.source_from.value,
         "status": source.status.value,
         "auto_fetch_content": source.auto_fetch_content,
+        "auto_fetch_enabled": source.auto_fetch_enabled,
+        "auto_fetch_last_scheduled_at": source.auto_fetch_last_scheduled_at,
         "last_article_at": last_article_at,
         "last_list_fetched_at": source.last_list_fetched_at,
         "last_content_fetched_at": source.last_content_fetched_at,
@@ -461,6 +463,25 @@ async def update_source_status(
 ) -> dict[str, Any]:
     source = await get_user_source(db, user, source_id)
     source.status = source_status
+    if source_status != SourceStatus.ACTIVE:
+        source.auto_fetch_enabled = False
+    await db.commit()
+    await db.refresh(source)
+    return _serialize_source(source)
+
+
+async def update_source_auto_fetch(
+    db: AsyncSession,
+    user: User,
+    source_id: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    source = await get_user_source(db, user, source_id)
+    if enabled and source.status != SourceStatus.ACTIVE:
+        raise SourceServiceError("只有状态正常的公众号源可以开启自动抓取。")
+    if enabled:
+        await get_active_authorized_session(db, user)
+    source.auto_fetch_enabled = enabled
     await db.commit()
     await db.refresh(source)
     return _serialize_source(source)
@@ -471,6 +492,7 @@ async def delete_source_tree(db: AsyncSession, user: User, source_id: str) -> No
     now = datetime.now(UTC)
     source.deleted_at = now
     source.status = SourceStatus.PAUSED
+    source.auto_fetch_enabled = False
     article_result = await db.execute(
         select(Article).where(Article.source_id == source.id, Article.deleted_at.is_(None))
     )

@@ -73,7 +73,8 @@ def task_note(task: CollectionTask, source_name: str | None = None) -> str:
     limit_label = "不设限" if limit == 0 else f"最多 {limit} 篇"
     content_label = "含正文" if payload.get("fetch_content") else "仅列表"
     source_label = source_name or "公众号源"
-    return f"{source_label} · {range_label} · {limit_label} · {content_label}"
+    trigger_label = "自动 · " if payload.get("trigger") == "auto" else ""
+    return f"{trigger_label}{source_label} · {range_label} · {limit_label} · {content_label}"
 
 
 def serialize_task(task: CollectionTask, source_name: str | None = None) -> TaskResponse:

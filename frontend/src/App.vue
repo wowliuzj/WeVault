@@ -1034,9 +1034,39 @@ async function toggleSourceStatus(source: WechatSource) {
     sources.value = sources.value.map((item) =>
       item.id === updatedSource.id ? updatedSource : item,
     );
-    showToast("success", nextStatus === "active" ? "已启用自动抓取" : "已停用自动抓取");
+    showToast("success", nextStatus === "active" ? "已启用公众号源" : "已停用公众号源");
   } catch (error) {
     showToast("error", error instanceof Error ? error.message : "更新公众号源状态失败");
+  } finally {
+    sourceOperatingId.value = "";
+  }
+}
+
+async function toggleSourceAutoFetch(source: WechatSource, event: Event) {
+  const input = event.target as HTMLInputElement;
+  const previousEnabled = source.status === "active" && source.auto_fetch_enabled;
+  const enabled = input.checked;
+
+  if (source.status !== "active") {
+    input.checked = false;
+    return;
+  }
+
+  sourceOperatingId.value = source.id;
+  try {
+    const updatedSource = await apiRequest<WechatSource>(`/sources/${source.id}/auto-fetch`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ enabled }),
+    });
+    sources.value = sources.value.map((item) =>
+      item.id === updatedSource.id ? updatedSource : item,
+    );
+    showToast("success", enabled ? "已开启自动抓取" : "已关闭自动抓取");
+  } catch (error) {
+    input.checked = previousEnabled;
+    await loadSources();
+    showToast("error", error instanceof Error ? error.message : "更新自动抓取失败");
   } finally {
     sourceOperatingId.value = "";
   }
@@ -2341,6 +2371,7 @@ onBeforeUnmount(() => {
                   <th>最后抓取</th>
                   <th>在库文章</th>
                   <th>状态</th>
+                  <th>自动抓取</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -2370,6 +2401,17 @@ onBeforeUnmount(() => {
                     <span class="tag" :class="sourceStatusTag(source.status)">
                       {{ sourceStatusLabel(source.status) }}
                     </span>
+                  </td>
+                  <td>
+                    <label class="switch-control">
+                      <input
+                        type="checkbox"
+                        :checked="source.status === 'active' && source.auto_fetch_enabled"
+                        :disabled="source.status !== 'active' || sourceOperatingId === source.id"
+                        @change="toggleSourceAutoFetch(source, $event)"
+                      />
+                      <span></span>
+                    </label>
                   </td>
                   <td>
                     <div class="source-actions">
@@ -2439,6 +2481,20 @@ onBeforeUnmount(() => {
                     <span class="tag" :class="sourceStatusTag(source.status)">
                       {{ sourceStatusLabel(source.status) }}
                     </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>自动抓取</dt>
+                  <dd>
+                    <label class="switch-control">
+                      <input
+                        type="checkbox"
+                        :checked="source.status === 'active' && source.auto_fetch_enabled"
+                        :disabled="source.status !== 'active' || sourceOperatingId === source.id"
+                        @change="toggleSourceAutoFetch(source, $event)"
+                      />
+                      <span></span>
+                    </label>
                   </dd>
                 </div>
               </dl>

@@ -86,6 +86,10 @@ class WechatSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=SourceStatus.ACTIVE,
     )
     auto_fetch_content: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_fetch_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_fetch_last_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
     fetch_limit_per_run: Mapped[int] = mapped_column(default=50)
     fetch_since_days: Mapped[int | None] = mapped_column()
     last_list_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

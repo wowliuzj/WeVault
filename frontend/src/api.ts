@@ -45,6 +45,8 @@ export type WechatSource = {
   source_from: "search" | "article_url" | "manual";
   status: "active" | "paused" | "failed";
   auto_fetch_content: boolean;
+  auto_fetch_enabled: boolean;
+  auto_fetch_last_scheduled_at: string | null;
   last_article_at: string | null;
   last_list_fetched_at: string | null;
   last_content_fetched_at: string | null;

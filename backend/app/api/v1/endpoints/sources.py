@@ -24,6 +24,7 @@ from app.services.sources import (
     refresh_source_info,
     search_wechat_sources,
     to_http_error,
+    update_source_auto_fetch,
     update_source_status,
 )
 from app.services.wechat_login_driver import MP_HEADERS
@@ -43,6 +44,8 @@ class SourceResponse(BaseModel):
     source_from: str
     status: str
     auto_fetch_content: bool
+    auto_fetch_enabled: bool
+    auto_fetch_last_scheduled_at: datetime | None = None
     last_article_at: datetime | None = None
     last_list_fetched_at: datetime | None = None
     last_content_fetched_at: datetime | None = None
@@ -87,6 +90,10 @@ class SourceFromUrlRequest(BaseModel):
 
 class SourceStatusRequest(BaseModel):
     status: Literal[SourceStatus.ACTIVE, SourceStatus.PAUSED]
+
+
+class SourceAutoFetchRequest(BaseModel):
+    enabled: bool
 
 
 @router.get("/avatar")
@@ -225,6 +232,23 @@ async def update_source_state(
 ) -> dict[str, Any]:
     try:
         return await update_source_status(db, current_user, source_id, payload.status)
+    except SourceServiceError as exc:
+        raise to_http_error(exc) from exc
+
+
+@router.api_route(
+    "/{source_id}/auto-fetch",
+    methods=["PATCH", "POST"],
+    response_model=SourceResponse,
+)
+async def update_source_auto_fetch_state(
+    source_id: str,
+    payload: SourceAutoFetchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return await update_source_auto_fetch(db, current_user, source_id, payload.enabled)
     except SourceServiceError as exc:
         raise to_http_error(exc) from exc
 
