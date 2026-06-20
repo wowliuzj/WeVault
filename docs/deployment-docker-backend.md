@@ -121,7 +121,8 @@ worker checks enabled public account sources once per day after
 `AUTO_FETCH_SCHEDULE_TIME` server local time, defaulting to `03:00`, and creates
 normal article-list collection tasks for the last `AUTO_FETCH_LOOKBACK_DAYS`
 days, defaulting to 2. If the WeChat authorization session is expired or
-invalid, automatic collection is disabled for the affected source.
+invalid, that run is skipped and the automatic collection switch is kept enabled
+so it can resume after re-authorization.
 
 Check logs:
 

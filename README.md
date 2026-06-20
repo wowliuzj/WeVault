@@ -81,7 +81,8 @@ automatic collection enabled, the worker creates a normal `fetch_source_articles
 task for the last `AUTO_FETCH_LOOKBACK_DAYS` days, defaulting to 2, skips
 existing articles, and uses the source's `auto_fetch_content` setting to decide
 whether to fetch article正文. If the active WeChat authorization session is
-expired or invalid, automatic collection is disabled for that source.
+expired or invalid, that run is skipped and the automatic collection switch is
+kept enabled so it can resume after re-authorization.
 
 For local debugging, the worker prints task lifecycle messages to the console,
 including whether a pending task was found, which task was selected, article

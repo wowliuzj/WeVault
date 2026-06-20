@@ -125,7 +125,7 @@ async def run_task(task_id: UUID, *, worker_name: str) -> None:
                 task.error_message = str(exc) or "任务执行失败"
                 task.finished_at = datetime.now(UTC)
                 await sync_export_failure(db, task, task.error_message)
-                await disable_auto_fetch_on_auth_failure(db, task, exc)
+                await log_auto_fetch_auth_failure(db, task, exc)
                 await db.commit()
                 log(f"worker={worker_name} run task={task_id} failed error={task.error_message}")
 
@@ -469,7 +469,7 @@ async def sync_export_failure(
     job.finished_at = datetime.now(UTC)
 
 
-async def disable_auto_fetch_on_auth_failure(
+async def log_auto_fetch_auth_failure(
     db: AsyncSession,
     task: CollectionTask,
     exc: Exception,
@@ -497,8 +497,7 @@ async def disable_auto_fetch_on_auth_failure(
         return
     if isinstance(exc, SourceServiceError) and not _looks_like_auth_failure(str(exc)):
         return
-    source.auto_fetch_enabled = False
-    log(f"task={task.id} disabled source auto fetch source={source.id} reason={exc}")
+    log(f"task={task.id} auto fetch auth failed source={source.id} reason={exc}")
 
 
 def _looks_like_auth_failure(message: str) -> bool:
@@ -645,9 +644,7 @@ async def schedule_auto_fetch_sources() -> int:
             try:
                 await get_active_authorized_session(db, user)
             except SourceServiceError as exc:
-                source.auto_fetch_enabled = False
-                changed_count += 1
-                log(f"auto fetch disabled source={source.id} reason={exc}")
+                log(f"auto fetch skipped source={source.id} reason={exc}")
                 continue
 
             if source.auto_fetch_last_scheduled_at is not None:

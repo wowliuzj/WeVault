@@ -211,8 +211,8 @@ defaulting to `03:00`. Each eligible source gets a normal
 - `trigger`: `auto`
 
 The task reuses the source's `auto_fetch_content` setting. If the user's active
-WeChat authorization is expired or invalid, automatic collection is disabled for
-that source instead of repeatedly creating failing tasks.
+WeChat authorization is expired or invalid, that run is skipped and the switch
+stays enabled so the next scheduled run can resume after re-authorization.
 
 Current supported worker handler:
 
