@@ -50,6 +50,20 @@ def task_types_for_queue(queue: str) -> Sequence[TaskType] | None:
     return QUEUE_TASK_TYPES[normalized]
 
 
+def auto_fetch_schedule_time() -> time:
+    raw_value = settings.auto_fetch_schedule_time.strip()
+    try:
+        hour_text, minute_text = raw_value.split(":", maxsplit=1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except ValueError as exc:
+        raise ValueError("AUTO_FETCH_SCHEDULE_TIME must use HH:MM format.") from exc
+
+    if hour not in range(24) or minute not in range(60):
+        raise ValueError("AUTO_FETCH_SCHEDULE_TIME must be a valid local time.")
+    return time(hour=hour, minute=minute)
+
+
 async def acquire_pending_task(*, queue: str, worker_name: str) -> UUID | None:
     task_types = task_types_for_queue(queue)
     async with AsyncSessionLocal() as db:
@@ -612,6 +626,7 @@ async def run_export_cleanup_loop() -> None:
 
 async def schedule_auto_fetch_sources() -> int:
     now = datetime.now().astimezone()
+    lookback_days = max(0, settings.auto_fetch_lookback_days)
     scheduled_count = 0
     changed_count = 0
     async with AsyncSessionLocal() as db:
@@ -669,7 +684,7 @@ async def schedule_auto_fetch_sources() -> int:
                     payload={
                         "source_id": str(source.id),
                         "range": "custom",
-                        "start_date": (now.date() - timedelta(days=2)).isoformat(),
+                        "start_date": (now.date() - timedelta(days=lookback_days)).isoformat(),
                         "end_date": now.date().isoformat(),
                         "limit": 0,
                         "fetch_content": source.auto_fetch_content,
@@ -689,9 +704,12 @@ async def schedule_auto_fetch_sources() -> int:
 
 
 async def run_auto_fetch_scheduler_loop() -> None:
+    schedule_time = auto_fetch_schedule_time()
+    log(f"auto fetch scheduler schedule_time={schedule_time.strftime('%H:%M')}")
     while True:
         now = datetime.now().astimezone()
-        if now.hour >= 3:
+        today_schedule = datetime.combine(now.date(), schedule_time, tzinfo=now.tzinfo)
+        if now >= today_schedule:
             try:
                 scheduled_count = await schedule_auto_fetch_sources()
                 if scheduled_count:
@@ -699,7 +717,7 @@ async def run_auto_fetch_scheduler_loop() -> None:
             except Exception as exc:
                 log(f"auto fetch scheduler failed error={exc}")
 
-        next_check = datetime.combine(now.date(), time(hour=3), tzinfo=now.tzinfo)
+        next_check = today_schedule
         if now >= next_check:
             next_check += timedelta(days=1)
         await asyncio.sleep(max(60.0, (next_check - now).total_seconds()))

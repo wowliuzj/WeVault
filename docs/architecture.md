@@ -199,11 +199,12 @@ Supported queue names:
 
 Automatic source collection is part of the long-running worker, not a separate
 cron job. Workers running with `all` or `fetch` check enabled public account
-sources once per day after 03:00 server local time. Each eligible source gets a
-normal `fetch_source_articles` task with:
+sources once per day after `AUTO_FETCH_SCHEDULE_TIME` server local time,
+defaulting to `03:00`. Each eligible source gets a normal
+`fetch_source_articles` task with:
 
 - `range`: `custom`
-- `start_date`: server local date minus 2 days
+- `start_date`: server local date minus `AUTO_FETCH_LOOKBACK_DAYS`, default 2
 - `end_date`: server local date
 - `limit`: `0`
 - `skip_existing`: `true`

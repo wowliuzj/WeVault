@@ -117,10 +117,11 @@ python -m app.worker --queue all --concurrency ${WORKER_CONCURRENCY}
 
 Automatic source collection is handled by this long-running worker process; no
 host `crontab` is required. With `WORKER_QUEUE=all` or `WORKER_QUEUE=fetch`, the
-worker checks enabled public account sources once per day after 03:00 server
-local time and creates normal article-list collection tasks for the last 2 days.
-If the WeChat authorization session is expired or invalid, automatic collection
-is disabled for the affected source.
+worker checks enabled public account sources once per day after
+`AUTO_FETCH_SCHEDULE_TIME` server local time, defaulting to `03:00`, and creates
+normal article-list collection tasks for the last `AUTO_FETCH_LOOKBACK_DAYS`
+days, defaulting to 2. If the WeChat authorization session is expired or
+invalid, automatic collection is disabled for the affected source.
 
 Check logs:
 

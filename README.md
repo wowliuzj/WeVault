@@ -75,12 +75,13 @@ The poll interval, default queue, and default concurrency are controlled by
 
 Automatic source collection does not require `crontab`. When the worker runs
 with `--queue all` or `--queue fetch`, it checks enabled public account sources
-once per day after 03:00 server local time. For each active source with
+once per day after `AUTO_FETCH_SCHEDULE_TIME` server local time, defaulting to
+`03:00`. For each active source with
 automatic collection enabled, the worker creates a normal `fetch_source_articles`
-task for the last 2 days, skips existing articles, and uses the source's
-`auto_fetch_content` setting to decide whether to fetch article正文. If the active
-WeChat authorization session is expired or invalid, automatic collection is
-disabled for that source.
+task for the last `AUTO_FETCH_LOOKBACK_DAYS` days, defaulting to 2, skips
+existing articles, and uses the source's `auto_fetch_content` setting to decide
+whether to fetch article正文. If the active WeChat authorization session is
+expired or invalid, automatic collection is disabled for that source.
 
 For local debugging, the worker prints task lifecycle messages to the console,
 including whether a pending task was found, which task was selected, article

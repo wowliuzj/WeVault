@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = 2.0
     worker_concurrency: int = 1
     worker_queue: str = "all"
+    auto_fetch_schedule_time: str = "03:00"
+    auto_fetch_lookback_days: int = 2
     wechat_browser_headless: bool = True
     wechat_login_timeout_seconds: int = 300
     cors_origins: list[str] = [
