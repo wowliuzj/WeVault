@@ -214,7 +214,10 @@ const wechatStatusLabel = computed(() => {
   if (wechatLoading.value) {
     return "读取中";
   }
-  return wechatAccount.value ? "有效" : "未授权";
+  if (!wechatAccount.value) {
+    return "未授权";
+  }
+  return wechatTokenStatusLabel(wechatAccount.value.token_status);
 });
 const wechatStatusNote = computed(() => {
   if (wechatLoading.value) {
@@ -223,9 +226,42 @@ const wechatStatusNote = computed(() => {
   if (!wechatAccount.value) {
     return "扫码后可采集公众号文章";
   }
+  if (wechatAccount.value.token_status !== "valid") {
+    return `当前公众号：${wechatAccount.value.nickname}，需要重新授权`;
+  }
   return `当前公众号：${wechatAccount.value.nickname}`;
 });
 const wechatExpiresLabel = computed(() => formatDateTime(wechatAccount.value?.expires_at));
+const wechatAuthHeading = computed(() => {
+  if (!wechatAccount.value) {
+    return "未连接微信公众号";
+  }
+  if (wechatAccount.value.token_status === "valid") {
+    return `授权有效：${wechatAccount.value.nickname}`;
+  }
+  if (wechatAccount.value.token_status === "expired") {
+    return `授权已过期：${wechatAccount.value.nickname}`;
+  }
+  if (wechatAccount.value.token_status === "invalid") {
+    return `授权无效：${wechatAccount.value.nickname}`;
+  }
+  return `授权状态未知：${wechatAccount.value.nickname}`;
+});
+const wechatAuthWarningText = computed(() => {
+  if (wechatLoading.value || hasValidWechatAuthorization.value) {
+    return "";
+  }
+  if (!wechatAccount.value) {
+    return "请扫码并授权公众号以使用本站功能。";
+  }
+  if (wechatAccount.value.token_status === "expired") {
+    return "公众号授权已过期，请重新扫码授权。";
+  }
+  return "公众号授权不可用，请重新扫码授权。";
+});
+const wechatAuthWarningActionLabel = computed(() =>
+  wechatAccount.value ? "重新授权" : "扫码授权",
+);
 const sourceModalVisible = computed(() => sourceModalMode.value !== null);
 const articleDetailHtml = computed(() => {
   const html = articleDetail.value?.content_clean_html || "";
@@ -262,6 +298,7 @@ const paginatedTasks = computed(() => {
   const start = (page - 1) * taskPageSize.value;
   return tasks.value.slice(start, start + taskPageSize.value);
 });
+const dashboardRecentTasks = computed(() => tasks.value.slice(0, 5));
 const exportPageCount = computed(() =>
   Math.max(1, Math.ceil(exportJobs.value.length / exportPageSize.value)),
 );
@@ -273,6 +310,12 @@ const paginatedExports = computed(() => {
   const start = (page - 1) * exportPageSize.value;
   return exportJobs.value.slice(start, start + exportPageSize.value);
 });
+const dashboardExportSucceededCount = computed(
+  () => exportJobs.value.filter((job) => job.status === "succeeded").length,
+);
+const dashboardExportActiveCount = computed(
+  () => exportJobs.value.filter((job) => ["pending", "running"].includes(job.status)).length,
+);
 const articlePageCount = computed(() =>
   Math.max(1, Math.ceil(articleTotal.value / articlePageSize.value)),
 );
@@ -471,6 +514,7 @@ function setView(viewId: ViewId) {
     void loadDashboardArticles();
     void loadSources();
     void loadTasks();
+    void loadExports();
   }
 }
 
@@ -636,6 +680,16 @@ function sourceStatusLabel(status: WechatSource["status"]) {
     return "正常";
   }
   return "暂停";
+}
+
+function wechatTokenStatusLabel(status: WechatAccount["token_status"]) {
+  const labels: Record<WechatAccount["token_status"], string> = {
+    valid: "有效",
+    expired: "已过期",
+    invalid: "无效",
+    unknown: "未知",
+  };
+  return labels[status];
 }
 
 function sourceStatusTag(status: WechatSource["status"]) {
@@ -1404,6 +1458,28 @@ function taskStatusTag(status: CollectionTask["status"]) {
   return "muted";
 }
 
+function taskTypeLabel(type: CollectionTask["task_type"]) {
+  const labels: Record<CollectionTask["task_type"], string> = {
+    fetch_source_articles: "同步文章列表",
+    fetch_article_content: "抓取正文",
+    export_articles: "导出文章",
+  };
+  return labels[type];
+}
+
+function taskActivityDotClass(status: CollectionTask["status"]) {
+  if (status === "succeeded") {
+    return "done";
+  }
+  if (status === "running") {
+    return "running";
+  }
+  if (status === "failed") {
+    return "failed";
+  }
+  return "pending";
+}
+
 function exportFormatLabel(job: ExportJob) {
   if (job.format === "pdf") {
     return "PDF";
@@ -2119,11 +2195,26 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <div v-if="wechatAuthWarningText" class="auth-warning-banner" role="alert">
+        <span>{{ wechatAuthWarningText }}</span>
+        <button
+          class="small-button"
+          type="button"
+          :disabled="wechatLoginLoading"
+          @click="startWechatLogin"
+        >
+          {{ wechatAuthWarningActionLabel }}
+        </button>
+      </div>
+
       <section v-if="activeView === 'dashboard'" class="view active">
         <div class="metric-grid">
           <article class="metric">
             <div class="metric-label">授权状态</div>
-            <div class="metric-value" :class="wechatAccount ? 'status-good' : 'status-warning'">
+            <div
+              class="metric-value"
+              :class="hasValidWechatAuthorization ? 'status-good' : 'status-warning'"
+            >
               {{ wechatStatusLabel }}
             </div>
             <div class="metric-note">{{ wechatStatusNote }}</div>
@@ -2164,8 +2255,10 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric">
             <div class="metric-label">导出中心</div>
-            <div class="metric-value">18</div>
-            <div class="metric-note">本周生成 6 个文件</div>
+            <div class="metric-value">{{ exportLoading ? "..." : exportJobs.length }}</div>
+            <div class="metric-note">
+              已完成 {{ dashboardExportSucceededCount }} 个 · 进行中 {{ dashboardExportActiveCount }} 个
+            </div>
           </article>
         </div>
 
@@ -2217,26 +2310,15 @@ onBeforeUnmount(() => {
                 <p>采集和导出都作为后台任务执行。</p>
               </div>
             </div>
-            <ol class="activity-list">
-              <li>
-                <span class="activity-dot running"></span>
+            <div v-if="taskLoading" class="empty-state">正在读取任务队列</div>
+            <div v-else-if="dashboardRecentTasks.length === 0" class="empty-state">还没有任务</div>
+            <ol v-else class="activity-list">
+              <li v-for="task in dashboardRecentTasks" :key="task.id">
+                <span class="activity-dot" :class="taskActivityDotClass(task.status)"></span>
                 <div>
-                  <strong>抓取正文</strong>
-                  <span>技术观察站 · 12/40</span>
-                </div>
-              </li>
-              <li>
-                <span class="activity-dot done"></span>
-                <div>
-                  <strong>同步文章列表</strong>
-                  <span>产品笔记 · 完成</span>
-                </div>
-              </li>
-              <li>
-                <span class="activity-dot pending"></span>
-                <div>
-                  <strong>导出 Markdown</strong>
-                  <span>已排队</span>
+                  <strong>{{ taskTypeLabel(task.task_type) }}</strong>
+                  <span>{{ task.note || task.id }}</span>
+                  <span>{{ taskStatusLabel(task.status) }} · {{ formatDateTime(task.created_at) }}</span>
                 </div>
               </li>
             </ol>
@@ -2281,9 +2363,9 @@ onBeforeUnmount(() => {
               />
               <span v-else class="wechat-avatar fallback">微</span>
               <div>
-                <strong>已连接：{{ wechatAccount.nickname }}</strong>
+                <strong>{{ wechatAuthHeading }}</strong>
                 <span>
-                  Token {{ wechatAccount.token_status }} · 到期：{{ wechatExpiresLabel }}
+                  Token {{ wechatTokenStatusLabel(wechatAccount.token_status) }} · 到期：{{ wechatExpiresLabel }}
                 </span>
                 <span>最近验证：{{ formatDateTime(wechatAccount.last_verified_at) }}</span>
               </div>

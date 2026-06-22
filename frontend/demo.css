@@ -445,6 +445,31 @@ h2 {
   font-size: 14px;
 }
 
+.auth-warning-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -6px 0 18px;
+  border: 1px solid #f0cf93;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.auth-warning-banner span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.auth-warning-banner .small-button {
+  flex: 0 0 auto;
+  background: #ffffff;
+}
+
 .inline-actions {
   display: flex;
   flex-wrap: wrap;
@@ -702,6 +727,10 @@ tr:last-child td {
 
 .activity-dot.running {
   background: var(--progress);
+}
+
+.activity-dot.failed {
+  background: var(--warn);
 }
 
 .activity-dot.done,
@@ -2186,6 +2215,15 @@ progress {
   .topbar,
   .panel-header {
     flex-direction: column;
+  }
+
+  .auth-warning-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .auth-warning-banner .small-button {
+    width: fit-content;
   }
 
   .inline-actions {
