@@ -17,7 +17,8 @@ The first version focuses on a small, reliable loop:
 ```text
 WeVault/
   backend/   FastAPI service, workers, crawlers, exporters
-  frontend/  Vue 3 management UI
+  frontend/  Vue 3 user-facing UI
+  console/   Vue 3 administrator console
   docs/      Product and architecture design documents
 ```
 
@@ -33,6 +34,27 @@ npm run dev
 ```
 
 By default, the frontend runs on `http://localhost:5725` and calls the backend at `http://localhost:5726/api/v1`.
+
+The administrator console scaffold lives in `console/`:
+
+```bash
+cd console
+npm install
+npm run dev
+```
+
+By default, the console runs on `http://localhost:5727` and calls the same
+backend API. The first administrator account is initialized by backend
+environment variables:
+
+```bash
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=change-this-admin-password
+ADMIN_DISPLAY_NAME=Administrator
+```
+
+The backend creates or updates that administrator during startup when both
+`ADMIN_EMAIL` and `ADMIN_PASSWORD` are set.
 
 The FastAPI backend scaffold lives in `backend/`:
 

@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.db.session import AsyncSessionLocal
+from app.services.admin_bootstrap import ensure_configured_admin
 from app.services.wechat_login_driver import wechat_login_manager
 
 
@@ -18,6 +20,11 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+    @app.on_event("startup")
+    async def bootstrap_admin() -> None:
+        async with AsyncSessionLocal() as db:
+            await ensure_configured_admin(db)
 
     @app.on_event("shutdown")
     async def shutdown_wechat_login_driver() -> None:
