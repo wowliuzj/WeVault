@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.models.enums import UserStatus
 from app.models.user import User
 from app.schemas.auth import TokenResponse, UserCreate, UserLogin, UserResponse, UserUpdate
+from app.services.turnstile import verify_turnstile_token
 
 router = APIRouter()
 
@@ -23,6 +24,8 @@ def serialize_user(user: User) -> UserResponse:
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    await verify_turnstile_token(payload.turnstile_token)
+
     if payload.invite_code.strip().lower() != "cloud":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -52,6 +55,8 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)) -> T
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    await verify_turnstile_token(payload.turnstile_token)
+
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.password_hash):

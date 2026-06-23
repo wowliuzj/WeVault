@@ -156,6 +156,12 @@ button:disabled {
   min-height: 40px;
 }
 
+.turnstile-box {
+  display: flex;
+  justify-content: center;
+  min-height: 65px;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);

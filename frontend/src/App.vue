@@ -22,6 +22,7 @@ import {
   type WechatLoginSession,
   type WechatSource,
 } from "./api";
+import { loadTurnstileScript, turnstileSiteKey } from "./turnstile";
 
 type ViewId = "dashboard" | "auth" | "sources" | "articles" | "tasks" | "exports" | "account";
 type AuthMode = "login" | "register";
@@ -92,6 +93,9 @@ const userMenuOpen = ref(false);
 const authMode = ref<AuthMode>("login");
 const authLoading = ref(false);
 const authError = ref("");
+const turnstileContainer = ref<HTMLElement | null>(null);
+const turnstileToken = ref("");
+const turnstileWidgetId = ref("");
 const token = ref(localStorage.getItem("wevault_token") || "");
 const currentUser = ref<User | null>(null);
 const authForm = ref({
@@ -425,8 +429,47 @@ function authHeaders(): HeadersInit {
   return getAuthHeaders(token.value);
 }
 
+async function renderTurnstile() {
+  if (!turnstileSiteKey || !turnstileContainer.value || turnstileWidgetId.value) {
+    return;
+  }
+
+  try {
+    await loadTurnstileScript();
+    if (!window.turnstile || !turnstileContainer.value || turnstileWidgetId.value) {
+      return;
+    }
+    turnstileWidgetId.value = window.turnstile.render(turnstileContainer.value, {
+      sitekey: turnstileSiteKey,
+      callback: (value: string) => {
+        turnstileToken.value = value;
+        authError.value = "";
+      },
+      "expired-callback": () => {
+        turnstileToken.value = "";
+      },
+      "error-callback": () => {
+        turnstileToken.value = "";
+        authError.value = "人机验证加载失败，请刷新后重试";
+      },
+    });
+  } catch {
+    authError.value = "人机验证加载失败，请检查网络后刷新";
+  }
+}
+
+function resetTurnstile() {
+  turnstileToken.value = "";
+  if (window.turnstile && turnstileWidgetId.value) {
+    window.turnstile.reset(turnstileWidgetId.value);
+  }
+}
+
 async function loadCurrentUser() {
   if (!token.value) {
+    window.setTimeout(() => {
+      void renderTurnstile();
+    });
     return;
   }
 
@@ -451,18 +494,25 @@ async function submitAuth() {
   authError.value = "";
 
   try {
+    if (turnstileSiteKey && !turnstileToken.value) {
+      authError.value = "请先完成人机验证";
+      return;
+    }
+
     const path = authMode.value === "login" ? "/auth/login" : "/auth/register";
     const payload =
       authMode.value === "login"
         ? {
             email: authForm.value.email,
             password: authForm.value.password,
+            turnstile_token: turnstileToken.value || null,
           }
         : {
             email: authForm.value.email,
             password: authForm.value.password,
             display_name: authForm.value.displayName || null,
             invite_code: authForm.value.inviteCode,
+            turnstile_token: turnstileToken.value || null,
           };
 
     const response = await apiRequest<TokenResponse>(path, {
@@ -477,6 +527,7 @@ async function submitAuth() {
     await loadExports();
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "登录失败";
+    resetTurnstile();
   } finally {
     authLoading.value = false;
   }
@@ -485,6 +536,7 @@ async function submitAuth() {
 function switchAuthMode(mode: AuthMode) {
   authMode.value = mode;
   authError.value = "";
+  resetTurnstile();
 }
 
 function setView(viewId: ViewId) {
@@ -1621,6 +1673,10 @@ async function logout() {
       headers: getAuthHeaders(activeToken),
     }).catch(() => undefined);
   }
+
+  window.setTimeout(() => {
+    void renderTurnstile();
+  });
 }
 
 async function loadWechatAccount() {
@@ -2108,8 +2164,13 @@ onBeforeUnmount(() => {
             required
           />
         </label>
+        <div v-if="turnstileSiteKey" ref="turnstileContainer" class="turnstile-box"></div>
         <p v-if="authError" class="auth-error">{{ authError }}</p>
-        <button class="primary-button auth-submit" type="submit" :disabled="authLoading">
+        <button
+          class="primary-button auth-submit"
+          type="submit"
+          :disabled="authLoading || (Boolean(turnstileSiteKey) && !turnstileToken)"
+        >
           {{ authLoading ? "处理中..." : authMode === "login" ? "登录" : "注册并登录" }}
         </button>
       </form>

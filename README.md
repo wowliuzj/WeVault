@@ -34,11 +34,15 @@ npm run dev
 ```
 
 By default, the frontend runs on `http://localhost:5725` and calls the backend at `http://localhost:5726/api/v1`.
+If Cloudflare Turnstile is enabled on the backend, set
+`VITE_TURNSTILE_SITE_KEY` in `frontend/.env` before starting or building the
+frontend.
 
 The administrator console scaffold lives in `console/`:
 
 ```bash
 cd console
+cp .env.example .env
 npm install
 npm run dev
 ```
@@ -55,6 +59,12 @@ ADMIN_DISPLAY_NAME=Administrator
 
 The backend creates or updates that administrator during startup when both
 `ADMIN_EMAIL` and `ADMIN_PASSWORD` are set.
+
+Cloudflare Turnstile is optional in local development. When
+`CLOUDFLARE_TURNSTILE_SECRET_KEY` is set in the backend environment, user login,
+user registration, and administrator console login require a valid Turnstile
+token. The frontend and console must be started or built with
+`VITE_TURNSTILE_SITE_KEY`.
 
 The FastAPI backend scaffold lives in `backend/`:
 

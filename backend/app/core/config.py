@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     admin_email: str | None = None
     admin_password: str | None = None
     admin_display_name: str = "Administrator"
+    cloudflare_turnstile_secret_key: str | None = None
     asset_storage_dir: str = "storage"
     export_file_ttl_days: int = 14
     export_cleanup_interval_seconds: int = 60 * 60 * 6

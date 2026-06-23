@@ -4,6 +4,7 @@ from pydantic import BaseModel, EmailStr, Field
 class AdminLogin(BaseModel):
     email: EmailStr
     password: str
+    turnstile_token: str | None = None
 
 
 class AdminCreate(BaseModel):

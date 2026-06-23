@@ -18,6 +18,7 @@ import {
   type ConsoleUserUpdatePayload,
   type UserStatus,
 } from "./api";
+import { loadTurnstileScript, turnstileSiteKey } from "./turnstile";
 
 type ToastKind = "success" | "error";
 type ConsoleView = "admins" | "users" | "user-detail";
@@ -30,6 +31,9 @@ const currentAdmin = ref<Admin | null>(null);
 const activeView = ref<ConsoleView>("admins");
 const authLoading = ref(false);
 const authError = ref("");
+const turnstileContainer = ref<HTMLElement | null>(null);
+const turnstileToken = ref("");
+const turnstileWidgetId = ref("");
 const loginForm = ref({
   email: "",
   password: "",
@@ -108,6 +112,42 @@ const articleDetailHtml = computed(() => {
 
 function authHeaders(): HeadersInit {
   return getAuthHeaders(token.value);
+}
+
+async function renderTurnstile() {
+  if (!turnstileSiteKey || !turnstileContainer.value || turnstileWidgetId.value) {
+    return;
+  }
+
+  try {
+    await loadTurnstileScript();
+    if (!window.turnstile || !turnstileContainer.value || turnstileWidgetId.value) {
+      return;
+    }
+    turnstileWidgetId.value = window.turnstile.render(turnstileContainer.value, {
+      sitekey: turnstileSiteKey,
+      callback: (value: string) => {
+        turnstileToken.value = value;
+        authError.value = "";
+      },
+      "expired-callback": () => {
+        turnstileToken.value = "";
+      },
+      "error-callback": () => {
+        turnstileToken.value = "";
+        authError.value = "人机验证加载失败，请刷新后重试";
+      },
+    });
+  } catch {
+    authError.value = "人机验证加载失败，请检查网络后刷新";
+  }
+}
+
+function resetTurnstile() {
+  turnstileToken.value = "";
+  if (window.turnstile && turnstileWidgetId.value) {
+    window.turnstile.reset(turnstileWidgetId.value);
+  }
 }
 
 function buildPaginationItems(currentPage: number, totalPages: number): PaginationItem[] {
@@ -298,6 +338,9 @@ function setActiveView(view: ConsoleView) {
 
 async function loadMe() {
   if (!token.value) {
+    window.setTimeout(() => {
+      void renderTurnstile();
+    });
     return;
   }
 
@@ -317,15 +360,24 @@ async function submitLogin() {
   authError.value = "";
 
   try {
+    if (turnstileSiteKey && !turnstileToken.value) {
+      authError.value = "请先完成人机验证";
+      return;
+    }
+
     const response = await apiRequest<AdminTokenResponse>("/admin/auth/login", {
       method: "POST",
-      body: JSON.stringify(loginForm.value),
+      body: JSON.stringify({
+        ...loginForm.value,
+        turnstile_token: turnstileToken.value || null,
+      }),
     });
     setSession(response);
     await loadAdmins();
     await loadUsers();
   } catch (error) {
     authError.value = error instanceof Error ? error.message : "登录失败";
+    resetTurnstile();
   } finally {
     authLoading.value = false;
   }
@@ -645,6 +697,10 @@ async function logout(callApi = true) {
       headers: getAuthHeaders(activeToken),
     }).catch(() => undefined);
   }
+
+  window.setTimeout(() => {
+    void renderTurnstile();
+  });
 }
 
 onMounted(() => {
@@ -682,8 +738,13 @@ onMounted(() => {
             required
           />
         </label>
+        <div v-if="turnstileSiteKey" ref="turnstileContainer" class="turnstile-box"></div>
         <p v-if="authError" class="error-text">{{ authError }}</p>
-        <button class="primary-button" type="submit" :disabled="authLoading">
+        <button
+          class="primary-button"
+          type="submit"
+          :disabled="authLoading || (Boolean(turnstileSiteKey) && !turnstileToken)"
+        >
           {{ authLoading ? "登录中..." : "登录" }}
         </button>
       </form>

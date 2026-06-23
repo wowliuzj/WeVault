@@ -28,6 +28,7 @@ from app.schemas.admin import (
     ConsoleUserUpdate,
     ConsoleWechatAccountResponse,
 )
+from app.services.turnstile import verify_turnstile_token
 
 router = APIRouter()
 
@@ -224,6 +225,8 @@ def parse_admin_status(value: str) -> UserStatus:
 
 @router.post("/auth/login", response_model=AdminTokenResponse)
 async def login(payload: AdminLogin, db: AsyncSession = Depends(get_db)) -> AdminTokenResponse:
+    await verify_turnstile_token(payload.turnstile_token)
+
     email = payload.email.strip().lower()
     result = await db.execute(select(Admin).where(Admin.email == email))
     admin = result.scalar_one_or_none()

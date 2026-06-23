@@ -63,6 +63,7 @@ For same-origin Nginx routing:
 
 ```env
 VITE_API_BASE_URL=/api/v1
+VITE_TURNSTILE_SITE_KEY=0x4AAAAAADpkyT1r7Zsxb6H3
 ```
 
 Build:
@@ -86,7 +87,13 @@ DATABASE_URL=postgresql+asyncpg://wevault:replace-with-a-strong-password@host.do
 SECRET_KEY=replace-with-a-long-random-secret
 ASSET_STORAGE_DIR=/app/storage
 WORKER_CONCURRENCY=2
+CLOUDFLARE_TURNSTILE_SECRET_KEY=replace-with-cloudflare-turnstile-secret
 ```
+
+When `CLOUDFLARE_TURNSTILE_SECRET_KEY` is set, user login, user registration,
+and administrator console login require Cloudflare Turnstile verification. The
+user frontend and administrator console must be built with
+`VITE_TURNSTILE_SITE_KEY`.
 
 ## 5. Start The Backend Container
 

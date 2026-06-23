@@ -124,6 +124,12 @@ p {
   gap: 14px;
 }
 
+.turnstile-box {
+  display: flex;
+  justify-content: center;
+  min-height: 65px;
+}
+
 .form label,
 .form label span {
   display: grid;
