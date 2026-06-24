@@ -1591,7 +1591,7 @@ tr:last-child td {
 }
 
 .source-table {
-  min-width: 1040px;
+  min-width: 1100px;
   table-layout: fixed;
 }
 
@@ -1619,12 +1619,12 @@ tr:last-child td {
 
 .source-table th:nth-child(6),
 .source-table td:nth-child(6) {
-  width: 110px;
+  width: 156px;
 }
 
 .source-table th:nth-child(7),
 .source-table td:nth-child(7) {
-  width: 198px;
+  width: 188px;
 }
 
 .source-table th,
@@ -1717,6 +1717,22 @@ tr:last-child td {
 .switch-control input:disabled + span {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.source-auto-controls {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .source-grid .source-actions {

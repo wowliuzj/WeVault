@@ -94,6 +94,7 @@ class SourceStatusRequest(BaseModel):
 
 class SourceAutoFetchRequest(BaseModel):
     enabled: bool
+    fetch_content: bool | None = None
 
 
 @router.get("/avatar")
@@ -248,7 +249,13 @@ async def update_source_auto_fetch_state(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     try:
-        return await update_source_auto_fetch(db, current_user, source_id, payload.enabled)
+        return await update_source_auto_fetch(
+            db,
+            current_user,
+            source_id,
+            payload.enabled,
+            payload.fetch_content,
+        )
     except SourceServiceError as exc:
         raise to_http_error(exc) from exc
 

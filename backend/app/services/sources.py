@@ -493,6 +493,7 @@ async def update_source_auto_fetch(
     user: User,
     source_id: str,
     enabled: bool,
+    fetch_content: bool | None = None,
 ) -> dict[str, Any]:
     source = await get_user_source(db, user, source_id)
     if enabled and source.status != SourceStatus.ACTIVE:
@@ -500,6 +501,10 @@ async def update_source_auto_fetch(
     if enabled:
         await get_active_authorized_session(db, user)
     source.auto_fetch_enabled = enabled
+    if not enabled:
+        source.auto_fetch_content = False
+    elif fetch_content is not None:
+        source.auto_fetch_content = fetch_content
     await db.commit()
     await db.refresh(source)
     return await serialize_source_with_stats(db, source)

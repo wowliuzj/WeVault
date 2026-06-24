@@ -1164,7 +1164,10 @@ async function toggleSourceAutoFetch(source: WechatSource, event: Event) {
     const updatedSource = await apiRequest<WechatSource>(`/sources/${source.id}/auto-fetch`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({
+        enabled,
+        fetch_content: enabled ? source.auto_fetch_content : false,
+      }),
     });
     sources.value = sources.value.map((item) =>
       item.id === updatedSource.id ? updatedSource : item,
@@ -1174,6 +1177,39 @@ async function toggleSourceAutoFetch(source: WechatSource, event: Event) {
     input.checked = previousEnabled;
     await loadSources();
     showToast("error", error instanceof Error ? error.message : "更新自动抓取失败");
+  } finally {
+    sourceOperatingId.value = "";
+  }
+}
+
+async function toggleSourceAutoFetchContent(source: WechatSource, event: Event) {
+  const input = event.target as HTMLInputElement;
+  const previousFetchContent = source.auto_fetch_content;
+  const fetchContent = input.checked;
+
+  if (source.status !== "active" || !source.auto_fetch_enabled) {
+    input.checked = false;
+    return;
+  }
+
+  sourceOperatingId.value = source.id;
+  try {
+    const updatedSource = await apiRequest<WechatSource>(`/sources/${source.id}/auto-fetch`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        enabled: true,
+        fetch_content: fetchContent,
+      }),
+    });
+    sources.value = sources.value.map((item) =>
+      item.id === updatedSource.id ? updatedSource : item,
+    );
+    showToast("success", fetchContent ? "已开启自动抓正文" : "已关闭自动抓正文");
+  } catch (error) {
+    input.checked = previousFetchContent;
+    await loadSources();
+    showToast("error", error instanceof Error ? error.message : "更新自动抓正文失败");
   } finally {
     sourceOperatingId.value = "";
   }
@@ -2543,7 +2579,7 @@ onBeforeUnmount(() => {
                   <th>最后抓取</th>
                   <th>在库文章</th>
                   <th>状态</th>
-                  <th>自动抓取</th>
+                  <th>自动</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -2575,15 +2611,40 @@ onBeforeUnmount(() => {
                     </span>
                   </td>
                   <td>
-                    <label class="switch-control">
-                      <input
-                        type="checkbox"
-                        :checked="source.status === 'active' && source.auto_fetch_enabled"
-                        :disabled="source.status !== 'active' || sourceOperatingId === source.id"
-                        @change="toggleSourceAutoFetch(source, $event)"
-                      />
-                      <span></span>
-                    </label>
+                    <div class="source-auto-controls">
+                      <label class="switch-row">
+                        <span>抓取</span>
+                        <span class="switch-control">
+                          <input
+                            type="checkbox"
+                            :checked="source.status === 'active' && source.auto_fetch_enabled"
+                            :disabled="source.status !== 'active' || sourceOperatingId === source.id"
+                            @change="toggleSourceAutoFetch(source, $event)"
+                          />
+                          <span></span>
+                        </span>
+                      </label>
+                      <label class="switch-row">
+                        <span>正文</span>
+                        <span class="switch-control">
+                          <input
+                            type="checkbox"
+                            :checked="
+                              source.status === 'active' &&
+                              source.auto_fetch_enabled &&
+                              source.auto_fetch_content
+                            "
+                            :disabled="
+                              source.status !== 'active' ||
+                              !source.auto_fetch_enabled ||
+                              sourceOperatingId === source.id
+                            "
+                            @change="toggleSourceAutoFetchContent(source, $event)"
+                          />
+                          <span></span>
+                        </span>
+                      </label>
+                    </div>
                   </td>
                   <td>
                     <div class="source-actions">
@@ -2656,17 +2717,42 @@ onBeforeUnmount(() => {
                   </dd>
                 </div>
                 <div>
-                  <dt>自动抓取</dt>
+                  <dt>自动</dt>
                   <dd>
-                    <label class="switch-control">
-                      <input
-                        type="checkbox"
-                        :checked="source.status === 'active' && source.auto_fetch_enabled"
-                        :disabled="source.status !== 'active' || sourceOperatingId === source.id"
-                        @change="toggleSourceAutoFetch(source, $event)"
-                      />
-                      <span></span>
-                    </label>
+                    <div class="source-auto-controls">
+                      <label class="switch-row">
+                        <span>抓取</span>
+                        <span class="switch-control">
+                          <input
+                            type="checkbox"
+                            :checked="source.status === 'active' && source.auto_fetch_enabled"
+                            :disabled="source.status !== 'active' || sourceOperatingId === source.id"
+                            @change="toggleSourceAutoFetch(source, $event)"
+                          />
+                          <span></span>
+                        </span>
+                      </label>
+                      <label class="switch-row">
+                        <span>正文</span>
+                        <span class="switch-control">
+                          <input
+                            type="checkbox"
+                            :checked="
+                              source.status === 'active' &&
+                              source.auto_fetch_enabled &&
+                              source.auto_fetch_content
+                            "
+                            :disabled="
+                              source.status !== 'active' ||
+                              !source.auto_fetch_enabled ||
+                              sourceOperatingId === source.id
+                            "
+                            @change="toggleSourceAutoFetchContent(source, $event)"
+                          />
+                          <span></span>
+                        </span>
+                      </label>
+                    </div>
                   </dd>
                 </div>
               </dl>
