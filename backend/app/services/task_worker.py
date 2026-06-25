@@ -216,9 +216,11 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
     start_at, end_at = task_date_bounds(payload)
     limit = int(payload.get("limit") or 0)
     skip_existing = bool(payload.get("skip_existing", True))
+    fetch_content = bool(payload.get("fetch_content"))
     page_size = 5
     begin = 0
     saved_count = 0
+    content_failures: list[str] = []
 
     task.progress_current = 0
     task.progress_total = limit
@@ -285,7 +287,7 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                 if not article_data["original_url"]:
                     continue
 
-                await upsert_article(
+                article = await upsert_article(
                     db,
                     source,
                     account.id,
@@ -300,6 +302,27 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                     f"task={task.id} saved article={saved_count} "
                     f"title={article_data['title']}"
                 )
+                should_fetch_content = (
+                    fetch_content
+                    and article is not None
+                    and article.content_status != FetchStatus.FETCHED
+                )
+                if should_fetch_content:
+                    log(
+                        f"task={task.id} auto fetching content "
+                        f"article={article.id} title={article.title}"
+                    )
+                    try:
+                        await fetch_article_content(db, article, cookies=cookies)
+                        source.last_content_fetched_at = datetime.now(UTC)
+                        await db.commit()
+                        log(f"task={task.id} auto fetched content article={article.id}")
+                    except Exception as exc:
+                        content_failures.append(f"{article.title}: {exc}")
+                        log(
+                            f"task={task.id} auto fetch content failed "
+                            f"article={article.id} error={exc}"
+                        )
 
             source.last_list_fetched_at = datetime.now(UTC)
             await db.commit()
@@ -310,6 +333,9 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                 break
             begin += page_size
             await asyncio.sleep(0.4)
+
+    if content_failures:
+        raise RuntimeError("；".join(content_failures[:3]))
 
 
 async def load_user(db: AsyncSession, user_id: UUID) -> User:
@@ -526,7 +552,7 @@ async def upsert_article(
     *,
     skip_existing: bool,
     cookies: list[dict[str, Any]] | None,
-) -> None:
+) -> Article | None:
     article = None
     if article_data["appmsgid"] and article_data["itemidx"] is not None:
         result = await db.execute(
@@ -540,14 +566,14 @@ async def upsert_article(
 
     if article is not None and article.deleted_at is not None:
         log(f"skip deleted article source={source.id} appmsgid={article.appmsgid}")
-        return
+        return None
 
     if article is not None and skip_existing:
         if article.cover_url and not article.cover_storage_path:
             cached = await cache_article_cover(article, cookies=cookies)
             if not cached:
                 log(f"cover cache failed article={article.id} title={article.title}")
-        return
+        return article
 
     if article is None:
         article = Article(
@@ -573,7 +599,7 @@ async def upsert_article(
         cached = await cache_article_cover(article, cookies=cookies)
         if not cached:
             log(f"cover cache failed article={article.id} title={article.title}")
-        return
+        return article
 
     article.title = article_data["title"]
     article.author = article_data["author"]
@@ -587,6 +613,7 @@ async def upsert_article(
     cached = await cache_article_cover(article, cookies=cookies)
     if not cached:
         log(f"cover cache failed article={article.id} title={article.title}")
+    return article
 
 
 async def run_worker_slot(worker_name: str, *, poll_interval: float, queue: str) -> None:
