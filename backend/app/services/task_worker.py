@@ -22,7 +22,11 @@ from app.services.article_assets import cache_article_cover
 from app.services.article_fetcher import fetch_article_content
 from app.services.export_cleanup import cleanup_expired_exports
 from app.services.exporter import run_export_job
-from app.services.sources import SourceServiceError, get_active_authorized_session
+from app.services.sources import (
+    SourceServiceError,
+    ensure_source_fakeid,
+    get_active_authorized_session,
+)
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
 
 
@@ -199,10 +203,16 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
         raise RuntimeError("任务缺少 source_id。")
 
     source = await load_source(db, task.user_id, UUID(str(source_id)))
-    if not source.fakeid:
-        raise RuntimeError("公众号源缺少 fakeid，请先刷新公众号信息。")
-
     user = await load_user(db, task.user_id)
+    if not source.fakeid:
+        log(f"task={task.id} source={source.id} missing fakeid, resolving from search")
+        if not await ensure_source_fakeid(db, user, source):
+            raise RuntimeError(
+                "公众号源缺少 fakeid，且无法通过公众号名称自动补齐，请刷新公众号信息。"
+            )
+        await db.commit()
+        await db.refresh(source)
+
     account, _, cookies, token = await get_active_authorized_session(db, user)
     log(
         "fetch_source_articles "

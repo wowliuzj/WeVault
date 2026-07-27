@@ -38,6 +38,7 @@ from app.services.sources import (
     SourceServiceError,
     cache_source_avatar,
     get_active_authorized_session,
+    resolve_search_metadata_for_article_source,
 )
 from app.services.wechat_login_driver import MP_HEADERS
 
@@ -285,7 +286,9 @@ async def get_or_create_paused_source_for_article(
     source_data: dict[str, Any],
     article_url: str,
 ) -> WechatSource:
-    biz = source_data.get("biz")
+    matched = await resolve_search_metadata_for_article_source(db, user, source_data)
+    source_payload = {**source_data, **(matched or {})}
+    biz = source_payload.get("biz") or source_data.get("biz")
     if not biz:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -303,11 +306,12 @@ async def get_or_create_paused_source_for_article(
         source = WechatSource(
             user_id=user.id,
             wechat_account_id=wechat_account_id,
-            name=source_data.get("name") or "待识别公众号",
-            alias=source_data.get("alias"),
+            name=source_payload.get("name") or "待识别公众号",
+            alias=source_payload.get("alias"),
+            fakeid=source_payload.get("fakeid"),
             biz=biz,
-            avatar_url=source_data.get("avatar_url"),
-            description=source_data.get("description"),
+            avatar_url=source_payload.get("avatar_url"),
+            description=source_payload.get("description"),
             source_from=SourceFrom.ARTICLE_URL,
             status=SourceStatus.PAUSED,
             raw_data={"article_url": article_url},
@@ -316,10 +320,11 @@ async def get_or_create_paused_source_for_article(
         await db.flush()
     else:
         source.wechat_account_id = wechat_account_id
-        source.name = source_data.get("name") or source.name
-        source.alias = source_data.get("alias") or source.alias
-        source.avatar_url = source_data.get("avatar_url") or source.avatar_url
-        source.description = source_data.get("description") or source.description
+        source.name = source_payload.get("name") or source.name
+        source.alias = source_payload.get("alias") or source.alias
+        source.fakeid = source_payload.get("fakeid") or source.fakeid
+        source.avatar_url = source_payload.get("avatar_url") or source.avatar_url
+        source.description = source_payload.get("description") or source.description
         source.deleted_at = None
         if source.status == SourceStatus.FAILED:
             source.status = SourceStatus.PAUSED

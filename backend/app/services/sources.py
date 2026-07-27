@@ -354,6 +354,33 @@ async def search_wechat_sources(
     return items
 
 
+def _match_source_search_result(
+    candidates: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    name = metadata.get("name")
+    alias = metadata.get("alias")
+    for key, value in (("fakeid", alias), ("biz", metadata.get("biz")), ("name", name)):
+        if not value:
+            continue
+        matched = next((item for item in candidates if item.get(key) == value), None)
+        if matched is not None:
+            return matched
+    return None
+
+
+async def resolve_search_metadata_for_article_source(
+    db: AsyncSession,
+    user: User,
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    name = metadata.get("name")
+    if not name:
+        return None
+    candidates = await search_wechat_sources(db, user, name, count=20)
+    return _match_source_search_result(candidates, metadata)
+
+
 async def add_source_from_search(
     db: AsyncSession,
     user: User,
@@ -404,6 +431,39 @@ async def add_source_from_search(
     return await serialize_source_with_stats(db, source)
 
 
+async def ensure_source_fakeid(
+    db: AsyncSession,
+    user: User,
+    source: WechatSource,
+) -> bool:
+    if source.fakeid:
+        return True
+
+    metadata = {
+        "name": source.name,
+        "alias": source.alias,
+        "biz": source.biz,
+    }
+    matched = await resolve_search_metadata_for_article_source(db, user, metadata)
+    if matched is None:
+        return False
+
+    source.name = matched.get("name") or source.name
+    source.alias = matched.get("alias") or source.alias
+    source.fakeid = matched.get("fakeid") or source.fakeid
+    source.biz = matched.get("biz") or source.biz
+    source.avatar_url = matched.get("avatar_url") or source.avatar_url
+    source.description = matched.get("description") or source.description
+    source.raw_data = {
+        **(source.raw_data or {}),
+        "fakeid_resolved_at": datetime.now(UTC).isoformat(),
+        "fakeid_resolve_result": matched.get("raw_data") or matched,
+    }
+    await cache_source_avatar(source)
+    await db.flush()
+    return bool(source.fakeid)
+
+
 async def add_source_from_article_url(
     db: AsyncSession,
     user: User,
@@ -427,8 +487,7 @@ async def add_source_from_article_url(
         if not resolved_name:
             raise SourceServiceError("文章链接中没有解析到公众号名称，请改用公众号搜索添加。")
 
-        candidates = await search_wechat_sources(db, user, resolved_name, count=20)
-        matched = next((item for item in candidates if item["name"] == resolved_name), None)
+        matched = await resolve_search_metadata_for_article_source(db, user, metadata)
         if matched is None:
             raise SourceServiceError("已解析公众号名称，但没有在微信搜索结果中找到匹配公众号。")
 
@@ -439,6 +498,8 @@ async def add_source_from_article_url(
         }
         return await add_source_from_search(db, user, matched)
 
+    matched = await resolve_search_metadata_for_article_source(db, user, metadata or {})
+
     result = await db.execute(
         select(WechatSource).where(
             WechatSource.user_id == user.id,
@@ -446,13 +507,14 @@ async def add_source_from_article_url(
         )
     )
     source = result.scalar_one_or_none()
-    source_payload = metadata or {}
+    source_payload = {**(metadata or {}), **(matched or {})}
     if source is None:
         source = WechatSource(
             user_id=user.id,
             wechat_account_id=account.id,
             name=source_payload.get("name") or "待识别公众号",
             alias=source_payload.get("alias"),
+            fakeid=source_payload.get("fakeid"),
             biz=biz,
             avatar_url=source_payload.get("avatar_url"),
             description=source_payload.get("description"),
@@ -466,6 +528,7 @@ async def add_source_from_article_url(
         source.wechat_account_id = account.id
         source.name = source_payload.get("name") or source.name
         source.alias = source_payload.get("alias") or source.alias
+        source.fakeid = source_payload.get("fakeid") or source.fakeid
         source.avatar_url = source_payload.get("avatar_url") or source.avatar_url
         source.description = source_payload.get("description") or source.description
         source.status = SourceStatus.ACTIVE
