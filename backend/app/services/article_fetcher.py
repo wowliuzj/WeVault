@@ -93,9 +93,11 @@ def extract_meta_content(html: str, property_name: str) -> str | None:
 
 
 def extract_js_value(html: str, name: str) -> str | None:
+    assignment = rf"(?:window\.{re.escape(name)}|var\s+{re.escape(name)})"
+    quoted_value = r"(?P<quote>['\"])(?P<value>(?:\\.|(?!(?P=quote)).)*?)(?P=quote)"
     patterns = [
-        rf"window\.{re.escape(name)}\s*=\s*['\"](?P<value>[^'\"]*)['\"]",
-        rf"var\s+{re.escape(name)}\s*=\s*['\"](?P<value>[^'\"]*)['\"]",
+        assignment + r"\s*=\s*htmlDecode\(" + quoted_value + r"\)",
+        assignment + r"\s*=\s*" + quoted_value,
     ]
     for pattern in patterns:
         match = re.search(pattern, html)

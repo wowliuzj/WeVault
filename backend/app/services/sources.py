@@ -18,6 +18,7 @@ from app.models.article import Article
 from app.models.enums import SourceFrom, SourceStatus, TokenStatus
 from app.models.user import User
 from app.models.wechat import WechatAccount, WechatSession, WechatSource
+from app.services.article_fetcher import decode_js_string, extract_js_value
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
 
 
@@ -114,15 +115,63 @@ async def cache_source_avatar(source: WechatSource) -> None:
     source.avatar_content_type = content_type
 
 
-def _extract_account_name(page_html: str) -> str | None:
-    match = re.search(
-        r'class="[^"]*wx_follow_nickname[^"]*"[^>]*>(?P<name>[^<]+)<',
-        page_html,
-    )
-    if not match:
+def _decode_extracted_value(value: str | None) -> str | None:
+    if not value:
         return None
-    name = unescape(match.group("name")).strip()
-    return name or None
+    decoded = unescape(decode_js_string(value)).strip()
+    return decoded or None
+
+
+def _extract_account_name(page_html: str) -> str | None:
+    nickname = _decode_extracted_value(extract_js_value(page_html, "nickname"))
+    if nickname:
+        return nickname
+
+    patterns = [
+        r'class="[^"]*wx_follow_nickname[^"]*"[^>]*>(?P<name>[^<]+)<',
+        r'class="[^"]*account_nickname_inner[^"]*"[^>]*>(?P<name>[^<]+)<',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, page_html, flags=re.DOTALL)
+        if match:
+            name = unescape(match.group("name")).strip()
+            if name:
+                return name
+    return None
+
+
+def _extract_article_source_metadata(article_url: str, page_html: str) -> dict[str, Any]:
+    parsed = urlparse(article_url)
+    query = parse_qs(parsed.query)
+    return {
+        "name": _extract_account_name(page_html),
+        "alias": _decode_extracted_value(extract_js_value(page_html, "user_name")),
+        "biz": (query.get("__biz") or query.get("biz") or [None])[0]
+        or _decode_extracted_value(extract_js_value(page_html, "biz")),
+        "avatar_url": _decode_extracted_value(extract_js_value(page_html, "round_head_img"))
+        or _decode_extracted_value(extract_js_value(page_html, "head_img"))
+        or _decode_extracted_value(extract_js_value(page_html, "hd_head_img"))
+        or _decode_extracted_value(extract_js_value(page_html, "ori_head_img_url"))
+        or _decode_extracted_value(extract_js_value(page_html, "ori_head_img")),
+        "description": _decode_extracted_value(extract_js_value(page_html, "profile_signature_new"))
+        or _decode_extracted_value(extract_js_value(page_html, "profile_signature"))
+        or _decode_extracted_value(extract_js_value(page_html, "signature")),
+    }
+
+
+async def _fetch_article_source_metadata(article_url: str) -> dict[str, Any] | None:
+    try:
+        async with httpx.AsyncClient(
+            headers=MP_HEADERS,
+            timeout=httpx.Timeout(20.0, connect=10.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(article_url)
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+
+    return _extract_article_source_metadata(str(response.url), response.text)
 
 
 def _serialize_source(
@@ -366,20 +415,15 @@ async def add_source_from_article_url(
         raise SourceServiceError("请粘贴 mp.weixin.qq.com 的公众号文章链接。")
 
     query = parse_qs(parsed.query)
-    biz = (query.get("__biz") or query.get("biz") or [None])[0]
+    metadata = await _fetch_article_source_metadata(article_url)
+    biz = (query.get("__biz") or query.get("biz") or [None])[0] or (
+        metadata or {}
+    ).get("biz")
     if not biz:
-        try:
-            async with httpx.AsyncClient(
-                headers=MP_HEADERS,
-                timeout=httpx.Timeout(20.0, connect=10.0),
-                follow_redirects=False,
-            ) as client:
-                response = await client.get(article_url)
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise SourceServiceError("读取文章链接失败，请检查链接是否可访问。") from exc
+        if metadata is None:
+            raise SourceServiceError("读取文章链接失败，请检查链接是否可访问。")
 
-        resolved_name = _extract_account_name(response.text)
+        resolved_name = metadata.get("name")
         if not resolved_name:
             raise SourceServiceError("文章链接中没有解析到公众号名称，请改用公众号搜索添加。")
 
@@ -402,12 +446,16 @@ async def add_source_from_article_url(
         )
     )
     source = result.scalar_one_or_none()
+    source_payload = metadata or {}
     if source is None:
         source = WechatSource(
             user_id=user.id,
             wechat_account_id=account.id,
-            name="待识别公众号",
+            name=source_payload.get("name") or "待识别公众号",
+            alias=source_payload.get("alias"),
             biz=biz,
+            avatar_url=source_payload.get("avatar_url"),
+            description=source_payload.get("description"),
             source_from=SourceFrom.ARTICLE_URL,
             status=SourceStatus.ACTIVE,
             raw_data={"article_url": article_url},
@@ -416,6 +464,10 @@ async def add_source_from_article_url(
         await db.flush()
     else:
         source.wechat_account_id = account.id
+        source.name = source_payload.get("name") or source.name
+        source.alias = source_payload.get("alias") or source.alias
+        source.avatar_url = source_payload.get("avatar_url") or source.avatar_url
+        source.description = source_payload.get("description") or source.description
         source.status = SourceStatus.ACTIVE
         source.deleted_at = None
         source.raw_data = {**(source.raw_data or {}), "article_url": article_url}

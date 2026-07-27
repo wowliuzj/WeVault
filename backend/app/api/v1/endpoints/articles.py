@@ -223,7 +223,14 @@ def parse_article_from_html(article_url: str, page_html: str) -> dict[str, Any]:
             "biz": biz,
             "avatar_url": decode_extracted_value(extract_js_value(page_html, "round_head_img"))
             or decode_extracted_value(extract_js_value(page_html, "head_img"))
+            or decode_extracted_value(extract_js_value(page_html, "hd_head_img"))
+            or decode_extracted_value(extract_js_value(page_html, "ori_head_img_url"))
             or decode_extracted_value(extract_js_value(page_html, "ori_head_img")),
+            "description": (
+                decode_extracted_value(extract_js_value(page_html, "profile_signature_new"))
+                or decode_extracted_value(extract_js_value(page_html, "profile_signature"))
+                or decode_extracted_value(extract_js_value(page_html, "signature"))
+            ),
         },
         "article": {
             "title": title,
@@ -300,6 +307,7 @@ async def get_or_create_paused_source_for_article(
             alias=source_data.get("alias"),
             biz=biz,
             avatar_url=source_data.get("avatar_url"),
+            description=source_data.get("description"),
             source_from=SourceFrom.ARTICLE_URL,
             status=SourceStatus.PAUSED,
             raw_data={"article_url": article_url},
@@ -311,6 +319,7 @@ async def get_or_create_paused_source_for_article(
         source.name = source_data.get("name") or source.name
         source.alias = source_data.get("alias") or source.alias
         source.avatar_url = source_data.get("avatar_url") or source.avatar_url
+        source.description = source_data.get("description") or source.description
         source.deleted_at = None
         if source.status == SourceStatus.FAILED:
             source.status = SourceStatus.PAUSED
