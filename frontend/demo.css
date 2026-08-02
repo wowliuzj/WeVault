@@ -1376,7 +1376,11 @@ tr:last-child td {
 
 .task-table th:nth-child(7),
 .task-table td:nth-child(7) {
-  width: 110px;
+  width: 300px;
+}
+
+.task-table {
+  min-width: 1240px;
 }
 
 .task-table td {
@@ -1446,6 +1450,23 @@ tr:last-child td {
   margin-top: 3px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.task-error-cell {
+  color: var(--text-muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.task-error-cell.has-error,
+.task-card-error {
+  color: #b42318;
+}
+
+.task-card-error {
+  margin-top: 6px;
+  line-height: 1.5;
 }
 
 .task-card-list,

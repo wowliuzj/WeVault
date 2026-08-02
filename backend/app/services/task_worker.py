@@ -44,6 +44,25 @@ def log(message: str) -> None:
     print(f"[worker] {datetime.now(UTC).isoformat()} {message}", flush=True)
 
 
+def describe_wechat_api_error(
+    base_resp: dict[str, Any], *, fallback: str = "微信接口返回失败。"
+) -> str:
+    ret = base_resp.get("ret")
+    raw_message = str(base_resp.get("err_msg") or "").strip()
+    message_lower = raw_message.lower()
+    code_suffix = f"（ret={ret}）" if ret not in (None, "") else ""
+
+    if "freq control" in message_lower:
+        return (
+            f"微信接口触发频率限制{code_suffix}。这不是授权失效，重新授权通常无效；"
+            "请稍后再试，并避免短时间连续采集多个公众号。原始信息：freq control"
+        )
+
+    if raw_message:
+        return f"微信接口返回失败{code_suffix}：{raw_message}"
+    return f"{fallback}{code_suffix}"
+
+
 def task_types_for_queue(queue: str) -> Sequence[TaskType] | None:
     normalized = queue.strip().lower()
     if normalized in {"", "all", "*"}:
@@ -267,7 +286,11 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
             data = response.json()
             base_resp = data.get("base_resp") or {}
             if base_resp.get("ret") not in (0, "0", None):
-                raise RuntimeError(base_resp.get("err_msg") or "微信文章列表接口返回失败。")
+                raise RuntimeError(
+                    describe_wechat_api_error(
+                        base_resp, fallback="微信文章列表接口返回失败。"
+                    )
+                )
 
             items = data.get("app_msg_list") or data.get("list") or []
             if not items:

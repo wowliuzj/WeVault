@@ -1522,6 +1522,17 @@ async function pollInstantArticleTask(taskId: string) {
   }
 }
 
+function taskErrorMessage(task: CollectionTask) {
+  const rawMessage = task.error_message?.trim();
+  if (!rawMessage) {
+    return "-";
+  }
+  if (rawMessage.toLowerCase() === "freq control") {
+    return "微信接口触发频率限制。这不是授权失效，重新授权通常无效；请稍后再试，并避免短时间连续采集多个公众号。（原始信息：freq control）";
+  }
+  return rawMessage;
+}
+
 function taskStatusLabel(status: CollectionTask["status"]) {
   const labels: Record<CollectionTask["status"], string> = {
     pending: "待执行",
@@ -3378,7 +3389,7 @@ onBeforeUnmount(() => {
                     <th>创建时间</th>
                     <th>开始时间</th>
                     <th>结束时间</th>
-                    <th>错误</th>
+                    <th>失败原因</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -3399,7 +3410,15 @@ onBeforeUnmount(() => {
                     <td>{{ formatDateTime(task.created_at) }}</td>
                     <td>{{ formatDateTime(task.started_at) }}</td>
                     <td>{{ formatDateTime(task.finished_at) }}</td>
-                    <td>{{ task.error_message || "-" }}</td>
+                    <td>
+                      <div
+                        class="task-error-cell"
+                        :class="{ 'has-error': task.error_message }"
+                        :title="task.error_message || undefined"
+                      >
+                        {{ taskErrorMessage(task) }}
+                      </div>
+                    </td>
                     <td>
                       <div class="task-actions">
                         <button
@@ -3444,6 +3463,9 @@ onBeforeUnmount(() => {
                   <span>创建时间：{{ formatDateTime(task.created_at) }}</span>
                   <span>开始时间：{{ formatDateTime(task.started_at) }}</span>
                   <span>结束时间：{{ formatDateTime(task.finished_at) }}</span>
+                  <span v-if="task.error_message" class="task-card-error">
+                    失败原因：{{ taskErrorMessage(task) }}
+                  </span>
                 </div>
                 <div class="task-status-cell">
                   <span class="tag" :class="taskStatusTag(task.status)">
