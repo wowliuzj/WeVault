@@ -79,6 +79,18 @@ class WereadClient:
         if response.status_code in {401, 403, 499}:
             raise WereadError("微信读书授权已失效，请重新扫码授权。")
         response.raise_for_status()
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            err_code = data.get("errCode")
+            if err_code not in (None, 0, "0"):
+                err_message = str(data.get("errMsg") or "").strip()
+                if err_code == -2012 or "登录" in err_message:
+                    raise WereadError("微信读书登录已超时，请重新扫码授权。")
+                detail = err_message or str(err_code)
+                raise WereadError(f"微信读书接口返回失败：{detail}")
         return response
 
     async def verify(self) -> dict[str, Any]:
@@ -105,9 +117,13 @@ class WereadClient:
 
     async def fetch_content(self, review_id: str) -> str:
         response = await self.request("/web/mp/content", params={"reviewId": review_id})
-        if "js_content" not in response.text:
+        content = response.text
+        if not content.strip():
+            raise WereadError("微信读书返回空内容，登录可能已超时，请重新扫码授权。")
+        markers = ("js_content", "window.cgiDataNew", "content_noencode")
+        if not any(marker in content for marker in markers):
             raise WereadError("微信读书返回内容中没有识别到文章正文。")
-        return response.text
+        return content
 
     async def search_mp(self, keyword: str) -> list[dict[str, Any]]:
         data = (await self.request("/api/store/search", params={"keyword": keyword})).json()

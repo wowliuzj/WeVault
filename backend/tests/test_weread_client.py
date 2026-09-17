@@ -1,0 +1,47 @@
+import httpx
+import pytest
+
+from app.services.weread_client import WereadClient, WereadError
+
+
+@pytest.mark.asyncio
+async def test_request_rejects_login_timeout_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_get(*args, **kwargs) -> httpx.Response:
+        request = httpx.Request("GET", "https://weread.qq.com/web/mp/articles")
+        return httpx.Response(
+            200,
+            request=request,
+            json={"errCode": -2012, "errMsg": "登录超时", "info": ""},
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    with pytest.raises(WereadError, match="登录已超时"):
+        await WereadClient({"vid": "test", "skey": "test"}).request("/web/mp/articles")
+
+
+@pytest.mark.asyncio
+async def test_fetch_content_accepts_cgi_data_without_js_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html = "<script>window.cgiDataNew={content_noencode:'<section>正文</section>'}</script>"
+
+    async def fake_request(*args, **kwargs) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    client = WereadClient({"vid": "test", "skey": "test"})
+    monkeypatch.setattr(client, "request", fake_request)
+
+    assert await client.fetch_content("review-id") == html
+
+
+@pytest.mark.asyncio
+async def test_fetch_content_rejects_empty_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_request(*args, **kwargs) -> httpx.Response:
+        return httpx.Response(200, text="")
+
+    client = WereadClient({"vid": "test", "skey": "test"})
+    monkeypatch.setattr(client, "request", fake_request)
+
+    with pytest.raises(WereadError, match="返回空内容"):
+        await client.fetch_content("review-id")
