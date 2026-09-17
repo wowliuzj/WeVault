@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -116,14 +117,17 @@ class WereadClient:
         return articles
 
     async def fetch_content(self, review_id: str) -> str:
-        response = await self.request("/web/mp/content", params={"reviewId": review_id})
-        content = response.text
-        if not content.strip():
-            raise WereadError("微信读书返回空内容，登录可能已超时，请重新扫码授权。")
-        markers = ("js_content", "window.cgiDataNew", "content_noencode")
-        if not any(marker in content for marker in markers):
-            raise WereadError("微信读书返回内容中没有识别到文章正文。")
-        return content
+        for attempt in range(3):
+            response = await self.request("/web/mp/content", params={"reviewId": review_id})
+            content = response.text
+            if content.strip():
+                markers = ("js_content", "window.cgiDataNew", "content_noencode")
+                if not any(marker in content for marker in markers):
+                    raise WereadError("微信读书返回内容中没有识别到文章正文。")
+                return content
+            if attempt < 2:
+                await asyncio.sleep(0.8 * (attempt + 1))
+        raise WereadError("微信读书正文接口连续返回空内容，请稍后重试。")
 
     async def list_shelf_mps(self) -> list[dict[str, Any]]:
         data = (

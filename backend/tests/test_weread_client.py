@@ -40,11 +40,16 @@ async def test_fetch_content_rejects_empty_response(monkeypatch: pytest.MonkeyPa
     async def fake_request(*args, **kwargs) -> httpx.Response:
         return httpx.Response(200, text="")
 
+    async def fake_sleep(*args, **kwargs) -> None:
+        return None
+
     client = WereadClient({"vid": "test", "skey": "test"})
     monkeypatch.setattr(client, "request", fake_request)
+    monkeypatch.setattr("app.services.weread_client.asyncio.sleep", fake_sleep)
 
-    with pytest.raises(WereadError, match="返回空内容"):
+    with pytest.raises(WereadError, match="连续返回空内容"):
         await client.fetch_content("review-id")
+
 
 @pytest.mark.asyncio
 async def test_search_mp_keeps_outer_book_id_when_book_info_is_nested(
@@ -124,3 +129,25 @@ async def test_list_shelf_mps_flattens_nested_book_info(
             "author": "作者",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_content_retries_empty_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html = "<div id='js_content'>正文</div>"
+    responses = [httpx.Response(200, text=""), httpx.Response(200, text=html)]
+    sleeps: list[float] = []
+
+    async def fake_request(*args, **kwargs) -> httpx.Response:
+        return responses.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = WereadClient({"vid": "test", "skey": "test"})
+    monkeypatch.setattr(client, "request", fake_request)
+    monkeypatch.setattr("app.services.weread_client.asyncio.sleep", fake_sleep)
+
+    assert await client.fetch_content("review-id") == html
+    assert sleeps == [0.8]
