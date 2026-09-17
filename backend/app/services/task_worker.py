@@ -29,6 +29,7 @@ from app.services.exporter import run_export_job
 from app.services.sources import (
     SourceServiceError,
     ensure_source_fakeid,
+    ensure_source_weread_book_id,
     get_active_authorized_session,
 )
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
@@ -234,20 +235,8 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
             log(f"task={task.id} WeChat list failed, trying WeRead error={exc}")
 
     if not source.weread_book_id:
-        try:
-            _, credentials = await get_active_weread_session(db, user)
-            candidates = await WereadClient(credentials).search_mp(source.name)
-            exact = [
-                item
-                for item in candidates
-                if item.get("title") == source.name or item.get("name") == source.name
-            ]
-            if len(exact) == 1:
-                source.weread_book_id = str(exact[0]["bookId"])
-                source.weread_matched_at = datetime.now(UTC)
-                await db.commit()
-        except WereadError:
-            pass
+        if await ensure_source_weread_book_id(db, user, source):
+            await db.commit()
 
     if source.weread_book_id:
         await _fetch_source_articles_weread(db, task, source, user)
@@ -875,6 +864,10 @@ async def schedule_auto_fetch_sources() -> int:
                     channel_available = True
                 except SourceServiceError as exc:
                     errors.append(str(exc))
+            if not source.weread_book_id:
+                matched_weread = await ensure_source_weread_book_id(db, user, source)
+                if matched_weread:
+                    changed_count += 1
             if source.weread_book_id:
                 try:
                     await get_active_weread_session(db, user)

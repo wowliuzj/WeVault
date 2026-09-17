@@ -45,3 +45,31 @@ async def test_fetch_content_rejects_empty_response(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(WereadError, match="返回空内容"):
         await client.fetch_content("review-id")
+
+@pytest.mark.asyncio
+async def test_search_mp_keeps_outer_book_id_when_book_info_is_nested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "results": [
+            {
+                "bookId": "MP_WXS_123",
+                "bookInfo": {"title": "测试公众号", "author": "测试作者"},
+            }
+        ]
+    }
+
+    async def fake_request(*args, **kwargs) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = WereadClient({"vid": "test", "skey": "test"})
+    monkeypatch.setattr(client, "request", fake_request)
+
+    assert await client.search_mp("测试公众号") == [
+        {
+            "bookId": "MP_WXS_123",
+            "bookInfo": {"title": "测试公众号", "author": "测试作者"},
+            "title": "测试公众号",
+            "author": "测试作者",
+        }
+    ]

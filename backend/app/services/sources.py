@@ -383,6 +383,75 @@ async def resolve_search_metadata_for_article_source(
     return _match_source_search_result(candidates, metadata)
 
 
+def _normalize_weread_source_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", "", value).casefold()
+
+
+def match_weread_source_candidate(
+    candidates: list[dict[str, Any]], source_name: str
+) -> dict[str, Any] | None:
+    normalized_name = _normalize_weread_source_name(source_name)
+    if not normalized_name:
+        return None
+    exact = [
+        item
+        for item in candidates
+        if normalized_name
+        in {
+            _normalize_weread_source_name(item.get("title")),
+            _normalize_weread_source_name(item.get("name")),
+        }
+    ]
+    return exact[0] if len(exact) == 1 else None
+
+
+async def ensure_source_weread_book_id(
+    db: AsyncSession,
+    user: User,
+    source: WechatSource,
+) -> bool:
+    if source.weread_book_id:
+        return True
+
+    from app.services.weread_client import (
+        WereadClient,
+        WereadError,
+        get_active_weread_session,
+    )
+
+    try:
+        _, credentials = await get_active_weread_session(db, user)
+        candidates = await WereadClient(credentials).search_mp(source.name)
+    except (WereadError, httpx.HTTPError):
+        return False
+
+    matched = match_weread_source_candidate(candidates, source.name)
+    book_id = matched.get("bookId") if matched else None
+    if not isinstance(book_id, str) or not book_id.startswith("MP_WXS_"):
+        return False
+
+    existing = await db.execute(
+        select(WechatSource.id).where(
+            WechatSource.user_id == user.id,
+            WechatSource.weread_book_id == book_id,
+            WechatSource.id != source.id,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return False
+
+    source.weread_book_id = book_id
+    source.weread_matched_at = datetime.now(UTC)
+    source.raw_data = {
+        **(source.raw_data or {}),
+        "weread_match_result": matched,
+    }
+    await db.flush()
+    return True
+
+
 async def add_source_from_search(
     db: AsyncSession,
     user: User,
@@ -427,6 +496,7 @@ async def add_source_from_search(
         source.deleted_at = None
         source.raw_data = payload.get("raw_data") or payload
 
+    await ensure_source_weread_book_id(db, user, source)
     await cache_source_avatar(source)
     await db.commit()
     await db.refresh(source)

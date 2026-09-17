@@ -133,7 +133,9 @@ class WereadClient:
             if isinstance(value, dict):
                 book_id = value.get("bookId")
                 if isinstance(book_id, str) and book_id.startswith("MP_WXS_"):
-                    matches.append(value.get("bookInfo") or value)
+                    book_info = value.get("bookInfo")
+                    item = {**value, **book_info} if isinstance(book_info, dict) else value
+                    matches.append({**item, "bookId": book_id})
                 for child in value.values():
                     walk(child)
             elif isinstance(value, list):
