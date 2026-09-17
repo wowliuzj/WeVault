@@ -242,8 +242,15 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
         await _fetch_source_articles_weread(db, task, source, user)
         return
     if wechat_error:
-        raise wechat_error
-    raise RuntimeError("公众号既没有可用 fakeid，也没有已关联的微信读书 bookId。")
+        raise RuntimeError(
+            f"微信公众号列表抓取失败：{wechat_error}；"
+            f"微信读书兜底失败：未能为公众号“{source.name}”匹配到 bookId，"
+            "请确认微信读书授权有效，并已在微信读书中将该公众号添加到书架。"
+        ) from wechat_error
+    raise RuntimeError(
+        f"未能为公众号“{source.name}”匹配到微信读书 bookId，"
+        "请确认微信读书授权有效，并已在微信读书中将该公众号添加到书架。"
+    )
 
 
 async def _fetch_source_articles_weread(

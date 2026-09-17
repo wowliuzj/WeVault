@@ -125,6 +125,25 @@ class WereadClient:
             raise WereadError("微信读书返回内容中没有识别到文章正文。")
         return content
 
+    async def list_shelf_mps(self) -> list[dict[str, Any]]:
+        data = (
+            await self.request(
+                "/web/shelf/sync",
+                params={"userVid": self.credentials["vid"], "synckey": 0},
+            )
+        ).json()
+        matches: list[dict[str, Any]] = []
+        for value in data.get("books") or []:
+            if not isinstance(value, dict):
+                continue
+            book_id = value.get("bookId")
+            if not isinstance(book_id, str) or not book_id.startswith("MP_WXS_"):
+                continue
+            book_info = value.get("bookInfo")
+            item = {**value, **book_info} if isinstance(book_info, dict) else value
+            matches.append({**item, "bookId": book_id})
+        return matches
+
     async def search_mp(self, keyword: str) -> list[dict[str, Any]]:
         data = (await self.request("/api/store/search", params={"keyword": keyword})).json()
         matches: list[dict[str, Any]] = []

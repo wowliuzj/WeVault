@@ -423,11 +423,15 @@ async def ensure_source_weread_book_id(
 
     try:
         _, credentials = await get_active_weread_session(db, user)
-        candidates = await WereadClient(credentials).search_mp(source.name)
+        client = WereadClient(credentials)
+        candidates = await client.list_shelf_mps()
+        matched = match_weread_source_candidate(candidates, source.name)
+        if matched is None:
+            candidates = await client.search_mp(source.name)
+            matched = match_weread_source_candidate(candidates, source.name)
     except (WereadError, httpx.HTTPError):
         return False
 
-    matched = match_weread_source_candidate(candidates, source.name)
     book_id = matched.get("bookId") if matched else None
     if not isinstance(book_id, str) or not book_id.startswith("MP_WXS_"):
         return False

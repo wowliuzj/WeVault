@@ -73,3 +73,54 @@ async def test_search_mp_keeps_outer_book_id_when_book_info_is_nested(
             "author": "测试作者",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_list_shelf_mps_returns_only_mp_books(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "books": [
+            {"bookId": "MP_WXS_123", "title": "测试公众号", "author": "作者"},
+            {"bookId": "normal-book", "title": "普通图书"},
+        ]
+    }
+
+    async def fake_request(*args, **kwargs) -> httpx.Response:
+        assert args[0] == "/web/shelf/sync"
+        assert kwargs["params"] == {"userVid": "test-vid", "synckey": 0}
+        return httpx.Response(200, json=payload)
+
+    client = WereadClient({"vid": "test-vid", "skey": "test-skey"})
+    monkeypatch.setattr(client, "request", fake_request)
+
+    assert await client.list_shelf_mps() == [payload["books"][0]]
+
+
+@pytest.mark.asyncio
+async def test_list_shelf_mps_flattens_nested_book_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "books": [
+            {
+                "bookId": "MP_WXS_123",
+                "bookInfo": {"title": "测试公众号", "author": "作者"},
+            }
+        ]
+    }
+
+    async def fake_request(*args, **kwargs) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = WereadClient({"vid": "test-vid", "skey": "test-skey"})
+    monkeypatch.setattr(client, "request", fake_request)
+
+    assert await client.list_shelf_mps() == [
+        {
+            "bookId": "MP_WXS_123",
+            "bookInfo": {"title": "测试公众号", "author": "作者"},
+            "title": "测试公众号",
+            "author": "作者",
+        }
+    ]
