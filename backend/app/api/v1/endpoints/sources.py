@@ -17,6 +17,8 @@ from app.services.sources import (
     SourceServiceError,
     add_source_from_article_url,
     add_source_from_search,
+    add_source_from_weread,
+    bind_source_weread,
     delete_source_tree,
     get_source_avatar_file,
     is_allowed_avatar_url,
@@ -38,6 +40,8 @@ class SourceResponse(BaseModel):
     alias: str | None = None
     fakeid: str | None = None
     biz: str | None = None
+    weread_book_id: str | None = None
+    weread_matched_at: datetime | None = None
     avatar_url: str | None = None
     avatar_asset_url: str | None = None
     description: str | None = None
@@ -82,6 +86,15 @@ class SourceFromSearchRequest(BaseModel):
     avatar_url: str | None = None
     description: str | None = None
     raw_data: dict[str, Any] | None = None
+
+
+class SourceFromWereadRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    book_id: str = Field(min_length=8, max_length=160)
+
+
+class SourceWereadBindingRequest(BaseModel):
+    book_id: str = Field(min_length=8, max_length=160)
 
 
 class SourceFromUrlRequest(BaseModel):
@@ -193,6 +206,33 @@ async def create_source_from_search(
         return await add_source_from_search(db, current_user, payload.model_dump())
     except SourceServiceError as exc:
         raise to_http_error(exc) from exc
+
+
+@router.post("/from-weread", response_model=SourceResponse)
+async def create_source_from_weread(
+    payload: SourceFromWereadRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return await add_source_from_weread(
+            db, current_user, name=payload.name.strip(), book_id=payload.book_id.strip()
+        )
+    except (SourceServiceError, RuntimeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.patch("/{source_id}/weread-binding", response_model=SourceResponse)
+async def update_source_weread_binding(
+    source_id: str,
+    payload: SourceWereadBindingRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        return await bind_source_weread(db, current_user, source_id, payload.book_id.strip())
+    except (SourceServiceError, RuntimeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/from-article-url", response_model=SourceResponse)

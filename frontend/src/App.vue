@@ -18,6 +18,8 @@ import {
   type SourceSearchResponse,
   type TokenResponse,
   type User,
+  type WereadLoginSession,
+  type WereadSession,
   type WechatAccount,
   type WechatLoginSession,
   type WechatSource,
@@ -118,6 +120,12 @@ const wechatRefreshLoading = ref(false);
 const wechatLoginError = ref("");
 const wechatRefreshError = ref("");
 const wechatLoginSession = ref<WechatLoginSession | null>(null);
+const wereadSession = ref<WereadSession | null>(null);
+const wereadLoading = ref(false);
+const wereadLoginLoading = ref(false);
+const wereadRefreshLoading = ref(false);
+const wereadLoginError = ref("");
+const wereadLoginSession = ref<WereadLoginSession | null>(null);
 const toast = ref<{ kind: ToastKind; message: string } | null>(null);
 const sourceViewMode = ref<SourceViewMode>("list");
 const sourceModalMode = ref<SourceModalMode>(null);
@@ -195,6 +203,7 @@ const taskForm = ref({
   skipExisting: true,
 });
 let wechatLoginTimer: number | undefined;
+let wereadLoginTimer: number | undefined;
 let toastTimer: number | undefined;
 let instantArticleTaskTimer: number | undefined;
 let instantArticleTaskTimeout: number | undefined;
@@ -205,6 +214,8 @@ const exportDownloadInFlightIds = new Set<string>();
 const currentView = computed(() => views.find((view) => view.id === activeView.value) ?? views[0]);
 const isAuthenticated = computed(() => Boolean(token.value && currentUser.value));
 const showWechatLoginModal = computed(() => Boolean(wechatLoginSession.value || wechatLoginError.value));
+const showWereadLoginModal = computed(() => Boolean(wereadLoginSession.value || wereadLoginError.value));
+const hasValidWereadAuthorization = computed(() => wereadSession.value?.status === "valid");
 const showWechatLoginLoading = computed(
   () => wechatLoginLoading.value && !showWechatLoginModal.value,
 );
@@ -479,6 +490,7 @@ async function loadCurrentUser() {
     });
     resetAccountForm(currentUser.value);
     await loadWechatAccount();
+    await loadWereadSession();
     await loadSources();
     await loadDashboardArticles();
     await loadArticles();
@@ -545,6 +557,7 @@ function setView(viewId: ViewId) {
 
   if (viewId === "auth") {
     void loadWechatAccount();
+    void loadWereadSession();
   }
   if (viewId === "sources") {
     void loadSources();
@@ -1699,6 +1712,7 @@ async function logout() {
   token.value = "";
   currentUser.value = null;
   wechatAccount.value = null;
+  wereadSession.value = null;
   sources.value = [];
   dashboardArticleTotal.value = 0;
   dashboardContentFetched.value = 0;
@@ -1711,6 +1725,7 @@ async function logout() {
   stopInstantArticleTaskPolling();
   instantArticleTask.value = null;
   closeWechatLogin();
+  closeWereadLogin();
   userMenuOpen.value = false;
   localStorage.removeItem("wevault_token");
 
@@ -1830,6 +1845,61 @@ function closeWechatLogin() {
   stopWechatLoginPolling();
   wechatLoginSession.value = null;
   wechatLoginError.value = "";
+}
+
+async function loadWereadSession() {
+  if (!token.value) return;
+  wereadLoading.value = true;
+  try {
+    wereadSession.value = await apiRequest<WereadSession | null>("/weread/session", { headers: authHeaders() });
+  } finally {
+    wereadLoading.value = false;
+  }
+}
+
+function stopWereadLoginPolling() {
+  if (wereadLoginTimer !== undefined) { window.clearInterval(wereadLoginTimer); wereadLoginTimer = undefined; }
+}
+
+async function pollWereadLoginStatus(loginId: string) {
+  try {
+    const session = await apiRequest<WereadLoginSession>(`/weread/login/${loginId}/status`, { headers: authHeaders() });
+    wereadLoginSession.value = session;
+    if (["confirmed", "expired", "failed"].includes(session.status)) {
+      stopWereadLoginPolling();
+      if (session.status === "confirmed") { await loadWereadSession(); await loadSources(); closeWereadLogin(); }
+    }
+  } catch (error) {
+    wereadLoginError.value = error instanceof Error ? error.message : "获取扫码状态失败";
+    stopWereadLoginPolling();
+  }
+}
+
+async function startWereadLogin() {
+  stopWereadLoginPolling();
+  wereadLoginLoading.value = true; wereadLoginError.value = ""; wereadLoginSession.value = null;
+  try {
+    const session = await apiRequest<WereadLoginSession>("/weread/login/qrcode", { method: "POST", headers: authHeaders() });
+    wereadLoginSession.value = session;
+    wereadLoginTimer = window.setInterval(() => void pollWereadLoginStatus(session.login_id), 2500);
+  } catch (error) { wereadLoginError.value = error instanceof Error ? error.message : "创建微信读书扫码失败"; }
+  finally { wereadLoginLoading.value = false; }
+}
+
+function closeWereadLogin() { stopWereadLoginPolling(); wereadLoginSession.value = null; wereadLoginError.value = ""; }
+
+async function refreshWereadSession() {
+  wereadRefreshLoading.value = true;
+  try {
+    wereadSession.value = await apiRequest<WereadSession>("/weread/session/refresh", { method: "POST", headers: authHeaders() });
+    showToast("success", "微信读书授权刷新成功");
+  } catch (error) { showToast("error", error instanceof Error ? error.message : "刷新微信读书授权失败"); await loadWereadSession(); }
+  finally { wereadRefreshLoading.value = false; }
+}
+
+async function logoutWereadSession() {
+  await apiRequest("/weread/session/logout", { method: "POST", headers: authHeaders() });
+  await loadWereadSession();
 }
 
 function formatDateTime(value?: string | null) {
@@ -2141,6 +2211,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", closeUserMenu);
   stopWechatLoginPolling();
+  stopWereadLoginPolling();
   stopInstantArticleTaskPolling();
   stopExportPolling();
   if (toastTimer !== undefined) {
@@ -2508,6 +2579,24 @@ onBeforeUnmount(() => {
             </div>
             <button class="ghost-button" type="button" @click="startWechatLogin">扫码授权</button>
           </div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div><h2>微信读书授权</h2><p>作为公众号列表和正文抓取的备用通道，不替代微信公众号授权。</p></div>
+            <button v-if="!hasValidWereadAuthorization" class="primary-button" type="button" :disabled="wereadLoginLoading" @click="startWereadLogin">微信扫码授权</button>
+          </div>
+          <div v-if="wereadLoading" class="auth-box">正在读取微信读书授权状态</div>
+          <div v-else-if="wereadSession" class="auth-box">
+            <div class="auth-state"><span class="activity-dot" :class="hasValidWereadAuthorization ? 'success' : 'pending'"></span><div>
+              <strong>微信读书授权{{ hasValidWereadAuthorization ? "有效" : "不可用" }}</strong>
+              <span>{{ wereadSession.nickname || "微信读书用户" }}</span><span>最近验证：{{ formatDateTime(wereadSession.last_verified_at) }}</span>
+            </div></div>
+            <div class="inline-actions auth-row-actions">
+              <button class="ghost-button" type="button" :disabled="wereadRefreshLoading" @click="refreshWereadSession">{{ wereadRefreshLoading ? "刷新中..." : "刷新授权" }}</button>
+              <button class="ghost-button" type="button" @click="startWereadLogin">重新授权</button><button class="ghost-button" type="button" @click="logoutWereadSession">退出授权</button>
+            </div>
+          </div>
+          <div v-else class="auth-box"><div class="auth-state"><span class="activity-dot pending"></span><div><strong>未连接微信读书</strong><span>授权后可在微信公众号通道失败时继续同步列表和正文。</span></div></div><button class="ghost-button" type="button" @click="startWereadLogin">微信扫码授权</button></div>
         </section>
       </section>
 
@@ -3869,6 +3958,15 @@ onBeforeUnmount(() => {
             </a>
           </div>
         </div>
+      </section>
+    </div>
+
+    <div v-if="showWereadLoginModal" class="modal-backdrop">
+      <section class="modal-dialog wechat-login-modal" role="dialog" aria-modal="true">
+        <button class="modal-close" type="button" aria-label="关闭微信读书扫码" @click="closeWereadLogin">×</button>
+        <div class="modal-header"><div><h2>微信读书扫码授权</h2><p>请使用微信扫描二维码，并在手机端确认登录。</p></div></div>
+        <div v-if="wereadLoginError" class="auth-error">{{ wereadLoginError }}</div>
+        <div v-else-if="wereadLoginSession" class="wechat-login-box"><div class="qr-box"><img v-if="wereadLoginSession.qr_url" :src="wereadLoginSession.qr_url" alt="微信读书登录二维码" /><span v-else>QR</span></div><div><strong>状态：{{ wereadLoginSession.status }}</strong><span>{{ wereadLoginSession.message || "等待微信扫码确认" }}</span><span>过期时间：{{ wereadLoginSession.expires_at }}</span></div></div>
       </section>
     </div>
 

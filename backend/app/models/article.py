@@ -20,6 +20,7 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "articles"
     __table_args__ = (
         UniqueConstraint("source_id", "appmsgid", "itemidx", name="uq_articles_source_appmsg_item"),
+        UniqueConstraint("user_id", "weread_review_id", name="uq_articles_user_weread_review"),
         Index("ix_articles_user_source_publish_time", "user_id", "source_id", "publish_time"),
     )
 
@@ -47,6 +48,8 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     biz: Mapped[str | None] = mapped_column(String(160), index=True)
     appmsgid: Mapped[str | None] = mapped_column(String(120), index=True)
     itemidx: Mapped[int | None] = mapped_column()
+    weread_review_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    weread_original_id: Mapped[str | None] = mapped_column(String(255))
     content_status: Mapped[FetchStatus] = mapped_column(
         Enum(FetchStatus, name="article_content_status", values_callable=enum_values),
         default=FetchStatus.PENDING,

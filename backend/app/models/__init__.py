@@ -8,6 +8,8 @@ from app.models.wechat import (
     WechatLoginSession,
     WechatSession,
     WechatSource,
+    WereadLoginSession,
+    WereadSession,
 )
 
 __all__ = [
@@ -18,6 +20,8 @@ __all__ = [
     "ExportFile",
     "ExportJob",
     "User",
+    "WereadLoginSession",
+    "WereadSession",
     "WechatAccount",
     "WechatLoginSession",
     "WechatSession",

@@ -19,7 +19,11 @@ from app.models.task import CollectionTask
 from app.models.user import User
 from app.models.wechat import WechatSource
 from app.services.article_assets import cache_article_cover
-from app.services.article_fetcher import fetch_article_content
+from app.services.article_fetcher import (
+    extract_js_value,
+    extract_meta_content,
+    fetch_article_content,
+)
 from app.services.export_cleanup import cleanup_expired_exports
 from app.services.exporter import run_export_job
 from app.services.sources import (
@@ -28,6 +32,7 @@ from app.services.sources import (
     get_active_authorized_session,
 )
 from app.services.wechat_login_driver import MP_BASE_URL, MP_HEADERS, wechat_login_manager
+from app.services.weread_client import WereadClient, WereadError, get_active_weread_session
 
 
 class TaskCancelled(RuntimeError):
@@ -206,8 +211,7 @@ def normalize_article_item(item: dict[str, Any]) -> dict[str, Any]:
         "cover_url": item.get("cover") or item.get("cover_url"),
         "original_url": item.get("link") or item.get("url"),
         "publish_time": publish_time,
-        "msgid": str(item.get("comm_msg_info", {}).get("id") or item.get("msgid") or "")
-        or None,
+        "msgid": str(item.get("comm_msg_info", {}).get("id") or item.get("msgid") or "") or None,
         "idx": int(itemidx) if str(itemidx).isdigit() else None,
         "appmsgid": str(appmsgid) if appmsgid else None,
         "itemidx": int(itemidx) if str(itemidx).isdigit() else None,
@@ -216,6 +220,134 @@ def normalize_article_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
+    payload = task.payload or {}
+    source = await load_source(db, task.user_id, UUID(str(payload.get("source_id"))))
+    user = await load_user(db, task.user_id)
+    wechat_error: Exception | None = None
+
+    if source.fakeid:
+        try:
+            await _fetch_source_articles_wechat(db, task)
+            return
+        except Exception as exc:
+            wechat_error = exc
+            log(f"task={task.id} WeChat list failed, trying WeRead error={exc}")
+
+    if not source.weread_book_id:
+        try:
+            _, credentials = await get_active_weread_session(db, user)
+            candidates = await WereadClient(credentials).search_mp(source.name)
+            exact = [
+                item
+                for item in candidates
+                if item.get("title") == source.name or item.get("name") == source.name
+            ]
+            if len(exact) == 1:
+                source.weread_book_id = str(exact[0]["bookId"])
+                source.weread_matched_at = datetime.now(UTC)
+                await db.commit()
+        except WereadError:
+            pass
+
+    if source.weread_book_id:
+        await _fetch_source_articles_weread(db, task, source, user)
+        return
+    if wechat_error:
+        raise wechat_error
+    raise RuntimeError("公众号既没有可用 fakeid，也没有已关联的微信读书 bookId。")
+
+
+async def _fetch_source_articles_weread(
+    db: AsyncSession, task: CollectionTask, source: WechatSource, user: User
+) -> None:
+    session, credentials = await get_active_weread_session(db, user)
+    client = WereadClient(credentials)
+    payload = task.payload or {}
+    start_at, end_at = task_date_bounds(payload)
+    limit = int(payload.get("limit") or 0)
+    skip_existing = bool(payload.get("skip_existing", True))
+    fetch_content = bool(payload.get("fetch_content"))
+    offset = 0
+    saved_count = 0
+    task.progress_current = 0
+    task.progress_total = limit
+    await db.commit()
+
+    while True:
+        items = await client.list_articles(source.weread_book_id, offset)
+        if not items:
+            break
+        stop_for_cutoff = False
+        for item in items:
+            review_id = item.get("reviewId")
+            publish_time = (
+                datetime.fromtimestamp(item["time"], tz=UTC) if item.get("time") else None
+            )
+            if start_at and publish_time and publish_time < start_at:
+                stop_for_cutoff = True
+                continue
+            if end_at and publish_time and publish_time > end_at:
+                continue
+            if limit and saved_count >= limit:
+                break
+            raw_html = await client.fetch_content(review_id)
+            original_url = extract_meta_content(raw_html, "og:url") or extract_js_value(
+                raw_html, "msg_link"
+            )
+            appmsgid = extract_js_value(raw_html, "appmsgid") or extract_js_value(raw_html, "mid")
+            itemidx = extract_js_value(raw_html, "idx") or "1"
+            biz = extract_js_value(raw_html, "biz")
+            if biz and not source.biz:
+                source.biz = biz
+            article_data = {
+                "title": item.get("title") or "未命名文章",
+                "author": extract_meta_content(raw_html, "og:article:author")
+                or item.get("mp_name"),
+                "digest": item.get("content"),
+                "cover_url": item.get("pic_url"),
+                "original_url": original_url
+                or f"https://weread.qq.com/web/mp/content?reviewId={review_id}",
+                "publish_time": publish_time,
+                "msgid": appmsgid,
+                "idx": int(itemidx) if str(itemidx).isdigit() else 1,
+                "appmsgid": appmsgid,
+                "itemidx": int(itemidx) if str(itemidx).isdigit() else 1,
+                "raw_data": item,
+                "weread_review_id": review_id,
+                "weread_original_id": item.get("originalId"),
+            }
+            article = await upsert_article(
+                db,
+                source,
+                source.wechat_account_id,
+                article_data,
+                skip_existing=skip_existing,
+                cookies=None,
+            )
+            if article:
+                article.weread_review_id = review_id
+                article.weread_original_id = item.get("originalId")
+                if fetch_content and article.content_status != FetchStatus.FETCHED:
+                    await fetch_article_content(
+                        db,
+                        article,
+                        cookies=None,
+                        weread_credentials=credentials,
+                        prefetched_weread_html=raw_html,
+                    )
+                    source.last_content_fetched_at = datetime.now(UTC)
+            saved_count += 1
+            task.progress_current = saved_count
+            await db.commit()
+        source.last_list_fetched_at = datetime.now(UTC)
+        session.last_used_at = datetime.now(UTC)
+        await db.commit()
+        if stop_for_cutoff or len(items) < 20 or (limit and saved_count >= limit):
+            break
+        offset += 20
+
+
+async def _fetch_source_articles_wechat(db: AsyncSession, task: CollectionTask) -> None:
     payload = task.payload or {}
     source_id = payload.get("source_id")
     if not source_id:
@@ -233,6 +365,10 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
         await db.refresh(source)
 
     account, _, cookies, token = await get_active_authorized_session(db, user)
+    try:
+        _, weread_credentials = await get_active_weread_session(db, user)
+    except WereadError:
+        weread_credentials = None
     log(
         "fetch_source_articles "
         f"task={task.id} source={source.id} name={source.name} "
@@ -287,9 +423,7 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
             base_resp = data.get("base_resp") or {}
             if base_resp.get("ret") not in (0, "0", None):
                 raise RuntimeError(
-                    describe_wechat_api_error(
-                        base_resp, fallback="微信文章列表接口返回失败。"
-                    )
+                    describe_wechat_api_error(base_resp, fallback="微信文章列表接口返回失败。")
                 )
 
             items = data.get("app_msg_list") or data.get("list") or []
@@ -331,10 +465,7 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                 saved_count += 1
                 task.progress_current = saved_count
                 await db.commit()
-                log(
-                    f"task={task.id} saved article={saved_count} "
-                    f"title={article_data['title']}"
-                )
+                log(f"task={task.id} saved article={saved_count} title={article_data['title']}")
                 should_fetch_content = (
                     fetch_content
                     and article is not None
@@ -346,7 +477,12 @@ async def fetch_source_articles(db: AsyncSession, task: CollectionTask) -> None:
                         f"article={article.id} title={article.title}"
                     )
                     try:
-                        await fetch_article_content(db, article, cookies=cookies)
+                        await fetch_article_content(
+                            db,
+                            article,
+                            cookies=cookies,
+                            weread_credentials=weread_credentials,
+                        )
                         source.last_content_fetched_at = datetime.now(UTC)
                         await db.commit()
                         log(f"task={task.id} auto fetched content article={article.id}")
@@ -431,6 +567,10 @@ async def fetch_article_batch(
     except Exception as exc:
         log(f"task={task.id} content fetch continuing without authorization error={exc}")
         cookies = None
+    try:
+        _, weread_credentials = await get_active_weread_session(db, user)
+    except WereadError:
+        weread_credentials = None
 
     articles = await load_task_articles(db, task)
     task.progress_current = 0
@@ -442,7 +582,9 @@ async def fetch_article_batch(
         await ensure_not_cancelled(db, task)
         log(f"task={task.id} fetching content article={article.id} title={article.title}")
         try:
-            await fetch_article_content(db, article, cookies=cookies)
+            await fetch_article_content(
+                db, article, cookies=cookies, weread_credentials=weread_credentials
+            )
             log(f"task={task.id} fetched content article={article.id}")
         except Exception as exc:
             failures.append(f"{article.title}: {exc}")
@@ -481,6 +623,10 @@ async def export_articles(db: AsyncSession, task: CollectionTask) -> None:
     except Exception as exc:
         log(f"task={task.id} export continuing without authorization error={exc}")
         cookies = None
+    try:
+        _, weread_credentials = await get_active_weread_session(db, user)
+    except WereadError:
+        weread_credentials = None
 
     job.status = TaskStatus.RUNNING
     task.progress_current = 0
@@ -495,14 +641,18 @@ async def export_articles(db: AsyncSession, task: CollectionTask) -> None:
         await ensure_not_cancelled(db, task)
         if article.content_status != FetchStatus.FETCHED:
             log(f"task={task.id} export prefetch article={article.id} title={article.title}")
-            await fetch_article_content(db, article, cookies=cookies)
+            await fetch_article_content(
+                db, article, cookies=cookies, weread_credentials=weread_credentials
+            )
         else:
             content_result = await db.execute(
                 select(ArticleContent).where(ArticleContent.article_id == article.id)
             )
             if content_result.scalar_one_or_none() is None:
                 log(f"task={task.id} export refetch missing content article={article.id}")
-                await fetch_article_content(db, article, cookies=cookies)
+                await fetch_article_content(
+                    db, article, cookies=cookies, weread_credentials=weread_credentials
+                )
         task.progress_current = index
         await db.commit()
 
@@ -580,7 +730,7 @@ def _looks_like_auth_failure(message: str) -> bool:
 async def upsert_article(
     db: AsyncSession,
     source: WechatSource,
-    wechat_account_id: UUID,
+    wechat_account_id: UUID | None,
     article_data: dict[str, Any],
     *,
     skip_existing: bool,
@@ -626,6 +776,8 @@ async def upsert_article(
             itemidx=article_data["itemidx"],
             content_status=FetchStatus.PENDING,
             raw_data=article_data["raw_data"],
+            weread_review_id=article_data.get("weread_review_id"),
+            weread_original_id=article_data.get("weread_original_id"),
         )
         db.add(article)
         await db.flush()
@@ -643,6 +795,10 @@ async def upsert_article(
     article.msgid = article_data["msgid"]
     article.idx = article_data["idx"]
     article.raw_data = article_data["raw_data"]
+    article.weread_review_id = article_data.get("weread_review_id") or article.weread_review_id
+    article.weread_original_id = (
+        article_data.get("weread_original_id") or article.weread_original_id
+    )
     cached = await cache_article_cover(article, cookies=cookies)
     if not cached:
         log(f"cover cache failed article={article.id} title={article.title}")
@@ -701,10 +857,25 @@ async def schedule_auto_fetch_sources() -> int:
         sources = list(result.scalars().all())
         for source in sources:
             user = await load_user(db, source.user_id)
-            try:
-                await get_active_authorized_session(db, user)
-            except SourceServiceError as exc:
-                log(f"auto fetch skipped source={source.id} reason={exc}")
+            channel_available = False
+            errors: list[str] = []
+            if source.fakeid:
+                try:
+                    await get_active_authorized_session(db, user)
+                    channel_available = True
+                except SourceServiceError as exc:
+                    errors.append(str(exc))
+            if source.weread_book_id:
+                try:
+                    await get_active_weread_session(db, user)
+                    channel_available = True
+                except WereadError as exc:
+                    errors.append(str(exc))
+            if not channel_available:
+                log(
+                    f"auto fetch skipped source={source.id} "
+                    f"reason={'；'.join(errors) or '没有可用抓取通道'}"
+                )
                 continue
 
             if source.auto_fetch_last_scheduled_at is not None:

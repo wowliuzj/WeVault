@@ -59,9 +59,47 @@ class WechatSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     wechat_account = relationship("WechatAccount", back_populates="sessions")
 
 
+class WereadSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "weread_sessions"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_weread_sessions_user"),)
+
+    user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    credentials_encrypted: Mapped[str | None] = mapped_column(Text)
+    nickname: Mapped[str | None] = mapped_column(String(120))
+    status: Mapped[TokenStatus] = mapped_column(
+        Enum(TokenStatus, name="weread_session_status", values_callable=enum_values),
+        default=TokenStatus.UNKNOWN,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user = relationship("User", back_populates="weread_session")
+
+
+class WereadLoginSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "weread_login_sessions"
+
+    user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    login_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    status: Mapped[WechatLoginStatus] = mapped_column(
+        Enum(WechatLoginStatus, name="weread_login_status", values_callable=enum_values),
+        default=WechatLoginStatus.WAITING_SCAN,
+        index=True,
+    )
+    qr_url: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict | None] = mapped_column(JSONB)
+
+
 class WechatSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "wechat_sources"
-    __table_args__ = (UniqueConstraint("user_id", "fakeid", name="uq_wechat_sources_user_fakeid"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "fakeid", name="uq_wechat_sources_user_fakeid"),
+        UniqueConstraint("user_id", "weread_book_id", name="uq_wechat_sources_user_weread_book"),
+    )
 
     user_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("users.id"), index=True)
     wechat_account_id: Mapped[UUID | None] = mapped_column(
@@ -73,6 +111,8 @@ class WechatSource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     alias: Mapped[str | None] = mapped_column(String(120))
     fakeid: Mapped[str | None] = mapped_column(String(160), index=True)
     biz: Mapped[str | None] = mapped_column(String(160), index=True)
+    weread_book_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    weread_matched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     avatar_url: Mapped[str | None] = mapped_column(Text)
     avatar_storage_path: Mapped[str | None] = mapped_column(Text)
     avatar_content_type: Mapped[str | None] = mapped_column(String(120))

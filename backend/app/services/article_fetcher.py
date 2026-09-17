@@ -18,12 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.article import Article, ArticleContent
 from app.models.enums import FetchStatus
+from app.models.wechat import WechatSource
 from app.services.article_assets import (
     IMAGE_EXTENSIONS,
     is_allowed_wechat_image_url,
     normalize_image_url,
 )
 from app.services.wechat_login_driver import MP_HEADERS, wechat_login_manager
+from app.services.weread_client import WereadClient, credentials_headers
 
 ARTICLE_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -579,8 +581,6 @@ def manifest_media(media_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-
-
 async def cache_article_content_images(
     client: httpx.AsyncClient,
     article: Article,
@@ -769,28 +769,48 @@ async def fetch_article_content(
     article: Article,
     *,
     cookies: list[dict[str, Any]] | None,
+    weread_credentials: dict[str, Any] | None = None,
+    prefetched_weread_html: str | None = None,
 ) -> None:
     article.content_status = FetchStatus.RUNNING
     await db.commit()
 
+    raw_html = ""
+    content_html: str | None = None
+    fetch_cookies = cookies
+    fetch_source = "mp.weixin.qq.com"
+    primary_error: Exception | None = None
     try:
-        fetch_cookies = cookies
-        async with httpx.AsyncClient(
-            headers=article_headers(cookies),
-            timeout=httpx.Timeout(25.0, connect=10.0),
-            follow_redirects=True,
-        ) as client:
-            raw_html = await fetch_article_html(client, article)
+        try:
+            async with httpx.AsyncClient(
+                headers=article_headers(cookies),
+                timeout=httpx.Timeout(25.0, connect=10.0),
+                follow_redirects=True,
+            ) as client:
+                raw_html = await fetch_article_html(client, article)
+                content_html = extract_article_content_html(raw_html)
+
+            if not content_html:
+                browser_page = await fetch_article_page_with_browser(article, cookies=cookies)
+                raw_html = browser_page["html"]
+                content_html = browser_page["content_html"] or extract_article_content_html(
+                    raw_html
+                )
+                fetch_cookies = browser_page["cookies"]
+            if not content_html:
+                raise ArticleFetchError("没有在文章页中找到正文内容。")
+        except Exception as exc:
+            primary_error = exc
+            if not article.weread_review_id or weread_credentials is None:
+                raise
+            raw_html = prefetched_weread_html or await WereadClient(
+                weread_credentials
+            ).fetch_content(article.weread_review_id)
             content_html = extract_article_content_html(raw_html)
-
-        if not content_html:
-            browser_page = await fetch_article_page_with_browser(article, cookies=cookies)
-            raw_html = browser_page["html"]
-            content_html = browser_page["content_html"] or extract_article_content_html(raw_html)
-            fetch_cookies = browser_page["cookies"]
-
-        if not content_html:
-            raise ArticleFetchError("没有在文章页中找到正文内容。")
+            fetch_source = "weread.qq.com"
+            fetch_cookies = None
+            if not content_html:
+                raise ArticleFetchError("微信读书返回内容中没有找到正文内容。") from exc
 
         clean_result = clean_article_html_with_media(
             content_html,
@@ -798,8 +818,13 @@ async def fetch_article_content(
             article_url=article.original_url,
         )
         clean_html = clean_result["html"]
+        asset_headers = (
+            credentials_headers(weread_credentials)
+            if fetch_source == "weread.qq.com" and weread_credentials
+            else article_headers(fetch_cookies)
+        )
         async with httpx.AsyncClient(
-            headers=article_headers(fetch_cookies),
+            headers=asset_headers,
             timeout=httpx.Timeout(25.0, connect=10.0),
             follow_redirects=True,
         ) as asset_client:
@@ -811,7 +836,6 @@ async def fetch_article_content(
 
         plain_text = html_to_text(clean_html)
         markdown = text_to_markdown(plain_text)
-
         result = await db.execute(
             select(ArticleContent).where(ArticleContent.article_id == article.id)
         )
@@ -820,12 +844,12 @@ async def fetch_article_content(
             content = ArticleContent(article_id=article.id)
             db.add(content)
 
-        content.raw_html = raw_html
+        content.raw_html = raw_html if fetch_source == "mp.weixin.qq.com" else None
         content.clean_html = clean_html
         content.markdown = markdown
         content.plain_text = plain_text
         content.assets_manifest = {
-            "source": "mp.weixin.qq.com",
+            "source": fetch_source,
             "fetched_by": "httpx",
             "assets": content_assets,
             "media": manifest_media(clean_result["media"]),
@@ -835,9 +859,22 @@ async def fetch_article_content(
         article.title = extract_meta_content(raw_html, "og:title") or article.title
         article.author = extract_meta_content(raw_html, "og:article:author") or article.author
         article.digest = extract_meta_content(raw_html, "og:description") or article.digest
+        biz = extract_js_value(raw_html, "biz")
+        if biz:
+            article.biz = article.biz or biz
+            source_result = await db.execute(
+                select(WechatSource).where(WechatSource.id == article.source_id)
+            )
+            source = source_result.scalar_one_or_none()
+            if source is not None:
+                source.biz = source.biz or biz
         article.content_status = FetchStatus.FETCHED
         await db.commit()
-    except Exception:
+    except Exception as exc:
         article.content_status = FetchStatus.FAILED
         await db.commit()
+        if primary_error is not None and exc is not primary_error:
+            raise ArticleFetchError(
+                f"微信公众号正文抓取失败：{primary_error}；微信读书兜底失败：{exc}"
+            ) from exc
         raise

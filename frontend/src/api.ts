@@ -33,12 +33,29 @@ export type WechatLoginSession = {
   message: string | null;
 };
 
+export type WereadSession = {
+  status: "valid" | "expired" | "invalid" | "unknown";
+  nickname: string | null;
+  last_verified_at: string | null;
+  expires_at: string | null;
+};
+
+export type WereadLoginSession = {
+  login_id: string;
+  status: "waiting_scan" | "scanned" | "confirmed" | "expired" | "failed";
+  qr_url: string | null;
+  expires_at: string;
+  message: string | null;
+};
+
 export type WechatSource = {
   id: string;
   name: string;
   alias: string | null;
   fakeid: string | null;
   biz: string | null;
+  weread_book_id: string | null;
+  weread_matched_at: string | null;
   avatar_url: string | null;
   avatar_asset_url: string | null;
   description: string | null;

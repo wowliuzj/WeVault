@@ -186,6 +186,8 @@ def _serialize_source(
         "alias": source.alias,
         "fakeid": source.fakeid,
         "biz": source.biz,
+        "weread_book_id": source.weread_book_id,
+        "weread_matched_at": source.weread_matched_at,
         "avatar_url": _normalize_avatar_url(source.avatar_url),
         "avatar_asset_url": f"/api/v1/sources/{source.id}/avatar"
         if source.avatar_storage_path
@@ -443,6 +445,8 @@ async def ensure_source_fakeid(
         "name": source.name,
         "alias": source.alias,
         "biz": source.biz,
+        "weread_book_id": source.weread_book_id,
+        "weread_matched_at": source.weread_matched_at,
     }
     matched = await resolve_search_metadata_for_article_source(db, user, metadata)
     if matched is None:
@@ -476,9 +480,7 @@ async def add_source_from_article_url(
 
     query = parse_qs(parsed.query)
     metadata = await _fetch_article_source_metadata(article_url)
-    biz = (query.get("__biz") or query.get("biz") or [None])[0] or (
-        metadata or {}
-    ).get("biz")
+    biz = (query.get("__biz") or query.get("biz") or [None])[0] or (metadata or {}).get("biz")
     if not biz:
         if metadata is None:
             raise SourceServiceError("读取文章链接失败，请检查链接是否可访问。")
@@ -588,6 +590,75 @@ async def refresh_source_info(
     return await serialize_source_with_stats(db, source)
 
 
+async def add_source_from_weread(
+    db: AsyncSession,
+    user: User,
+    *,
+    name: str,
+    book_id: str,
+) -> dict[str, Any]:
+    from app.services.weread_client import get_active_weread_session
+
+    await get_active_weread_session(db, user)
+    if not book_id.startswith("MP_WXS_"):
+        raise SourceServiceError("微信读书 bookId 格式不正确。")
+    result = await db.execute(
+        select(WechatSource).where(
+            WechatSource.user_id == user.id,
+            WechatSource.weread_book_id == book_id,
+        )
+    )
+    source = result.scalar_one_or_none()
+    now = datetime.now(UTC)
+    if source is None:
+        source = WechatSource(
+            user_id=user.id,
+            name=name,
+            weread_book_id=book_id,
+            weread_matched_at=now,
+            source_from=SourceFrom.MANUAL,
+            status=SourceStatus.ACTIVE,
+            raw_data={"weread_book_id": book_id},
+        )
+        db.add(source)
+    else:
+        source.name = name or source.name
+        source.status = SourceStatus.ACTIVE
+        source.deleted_at = None
+        source.weread_matched_at = now
+    await db.commit()
+    await db.refresh(source)
+    return await serialize_source_with_stats(db, source)
+
+
+async def bind_source_weread(
+    db: AsyncSession,
+    user: User,
+    source_id: str,
+    book_id: str,
+) -> dict[str, Any]:
+    from app.services.weread_client import get_active_weread_session
+
+    await get_active_weread_session(db, user)
+    if not book_id.startswith("MP_WXS_"):
+        raise SourceServiceError("微信读书 bookId 格式不正确。")
+    source = await get_user_source(db, user, source_id)
+    existing = await db.execute(
+        select(WechatSource.id).where(
+            WechatSource.user_id == user.id,
+            WechatSource.weread_book_id == book_id,
+            WechatSource.id != source.id,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise SourceServiceError("这个微信读书公众号已经绑定到其他来源。")
+    source.weread_book_id = book_id
+    source.weread_matched_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(source)
+    return await serialize_source_with_stats(db, source)
+
+
 async def update_source_status(
     db: AsyncSession,
     user: User,
@@ -614,7 +685,23 @@ async def update_source_auto_fetch(
     if enabled and source.status != SourceStatus.ACTIVE:
         raise SourceServiceError("只有状态正常的公众号源可以开启自动抓取。")
     if enabled:
-        await get_active_authorized_session(db, user)
+        channel_available = False
+        if source.fakeid:
+            try:
+                await get_active_authorized_session(db, user)
+                channel_available = True
+            except SourceServiceError:
+                pass
+        if source.weread_book_id:
+            try:
+                from app.services.weread_client import get_active_weread_session
+
+                await get_active_weread_session(db, user)
+                channel_available = True
+            except RuntimeError:
+                pass
+        if not channel_available:
+            raise SourceServiceError("当前来源没有可用的微信公众号或微信读书授权通道。")
     source.auto_fetch_enabled = enabled
     if not enabled:
         source.auto_fetch_content = False

@@ -22,6 +22,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=UserStatus.ACTIVE,
     )
 
+    weread_session = relationship("WereadSession", uselist=False)
     wechat_accounts = relationship("WechatAccount", back_populates="user")
     sources = relationship("WechatSource", back_populates="user")
     articles = relationship("Article", back_populates="user")
