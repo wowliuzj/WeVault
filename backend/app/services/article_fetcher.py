@@ -126,6 +126,26 @@ def extract_jsdecode_field(html: str, name: str) -> str | None:
     return value or None
 
 
+def extract_js_string_field(html: str, name: str) -> str | None:
+    for quote, value_pattern in (("'", r"(?:\\.|[^'\\])*"), ('"', r'(?:\\.|[^"\\])*')):
+        pattern = (
+            rf"\b{re.escape(name)}\s*:\s*{re.escape(quote)}"
+            rf"(?P<value>{value_pattern}){re.escape(quote)}"
+        )
+        match = re.search(pattern, html, flags=re.DOTALL)
+        if not match:
+            continue
+        raw_value = match.group("value")
+        try:
+            value = str(ast.literal_eval(f"{quote}{raw_value}{quote}"))
+        except (SyntaxError, ValueError):
+            value = raw_value
+        value = unescape(value).strip()
+        if value:
+            return value
+    return None
+
+
 def extract_element_html(html: str, element_id: str) -> str | None:
     start_match = re.search(
         rf"<(?P<tag>[a-zA-Z0-9]+)(?P<attrs>[^>]*\bid\s*=\s*[\"']?"
@@ -179,11 +199,15 @@ def extract_cgi_data_content_html(raw_html: str) -> str | None:
     if "window.cgiDataNew" not in raw_html:
         return None
 
-    content = extract_jsdecode_field(raw_html, "content_noencode")
+    content = extract_jsdecode_field(raw_html, "content_noencode") or extract_js_string_field(
+        raw_html, "content_noencode"
+    )
     if content:
         return content
 
-    title = extract_jsdecode_field(raw_html, "title")
+    title = extract_jsdecode_field(raw_html, "title") or extract_js_string_field(
+        raw_html, "title"
+    )
     if title:
         return f"<section><p>{escape(title)}</p></section>"
 
