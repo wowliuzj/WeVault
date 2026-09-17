@@ -1,4 +1,8 @@
-from app.services.article_fetcher import extract_cgi_data_content_html
+from app.services.article_fetcher import (
+    extract_cgi_data_content_html,
+    extract_original_article_url,
+    is_weread_content_url,
+)
 
 
 def test_extract_cgi_data_content_html_from_jsdecode() -> None:
@@ -23,3 +27,38 @@ def test_extract_cgi_data_content_html_from_double_quoted_string() -> None:
     };</script>'''
 
     assert extract_cgi_data_content_html(html) == '<section><p>double "quoted"</p></section>'
+
+
+def test_extract_original_article_url_from_meta() -> None:
+    html = (
+        '<meta property="og:url" '
+        'content="https://mp.weixin.qq.com/s?__biz=abc&amp;mid=123&amp;idx=1">'
+    )
+
+    assert extract_original_article_url(html) == (
+        "https://mp.weixin.qq.com/s?__biz=abc&mid=123&idx=1"
+    )
+
+
+def test_extract_original_article_url_from_msg_link() -> None:
+    html = (
+        "var msg_link = "
+        "'https://mp.weixin.qq.com/s?__biz=abc\\x26mid=123\\x26idx=1';"
+    )
+
+    assert extract_original_article_url(html) == (
+        "https://mp.weixin.qq.com/s?__biz=abc&mid=123&idx=1"
+    )
+
+
+def test_extract_original_article_url_rejects_weread_content_endpoint() -> None:
+    html = (
+        '<meta property="og:url" '
+        'content="https://weread.qq.com/web/mp/content?reviewId=review">'
+    )
+
+    assert extract_original_article_url(html) is None
+    assert is_weread_content_url(
+        "https://weread.qq.com/web/mp/content?reviewId=review"
+    )
+    assert not is_weread_content_url("https://mp.weixin.qq.com/s?__biz=abc")

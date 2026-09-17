@@ -63,6 +63,8 @@ async def test_weread_list_only_does_not_fetch_article_content(
     await task_worker._fetch_source_articles_weread(FakeDb(), task, source, object())
 
     assert saved[0]["weread_review_id"] == "MP_WXS_123_review"
+    # This endpoint is retained only as an internal marker until the real
+    # mp.weixin.qq.com URL is lazily resolved; it must never be opened directly.
     assert saved[0]["original_url"] == (
         "https://weread.qq.com/web/mp/content?reviewId=MP_WXS_123_review"
     )

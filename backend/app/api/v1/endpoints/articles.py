@@ -33,6 +33,8 @@ from app.services.article_fetcher import (
     decode_js_string,
     extract_js_value,
     extract_meta_content,
+    extract_original_article_url,
+    is_weread_content_url,
 )
 from app.services.sources import (
     SourceServiceError,
@@ -41,6 +43,7 @@ from app.services.sources import (
     resolve_search_metadata_for_article_source,
 )
 from app.services.wechat_login_driver import MP_HEADERS
+from app.services.weread_client import WereadClient, WereadError, get_active_weread_session
 
 router = APIRouter()
 
@@ -101,6 +104,10 @@ class ArticleFromUrlResponse(BaseModel):
     status: Literal["created", "existing"]
     article: ArticleResponse
     task_id: str | None = None
+
+
+class ArticleOriginalUrlResponse(BaseModel):
+    original_url: str
 
 
 def source_avatar_asset_url(source: WechatSource) -> str | None:
@@ -755,6 +762,55 @@ async def get_cached_article_asset(
         media_type=mimetypes.guess_type(asset_name)[0] or "application/octet-stream",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+@router.post("/{article_id}/resolve-original-url", response_model=ArticleOriginalUrlResponse)
+async def resolve_article_original_url(
+    article_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ArticleOriginalUrlResponse:
+    article, source = await get_user_article(db, current_user, article_id)
+    if not is_weread_content_url(article.original_url):
+        return ArticleOriginalUrlResponse(original_url=article.original_url)
+    if not article.weread_review_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该文章缺少微信读书 reviewId，暂时无法解析原文链接。",
+        )
+
+    try:
+        session, credentials = await get_active_weread_session(db, current_user)
+        raw_html = await WereadClient(credentials).fetch_content(article.weread_review_id)
+    except WereadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    resolved_url = extract_original_article_url(raw_html)
+    if not resolved_url:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="微信读书返回内容中没有识别到原文链接。",
+        )
+
+    article.original_url = resolved_url
+    biz = extract_js_value(raw_html, "biz")
+    if biz:
+        article.biz = article.biz or biz
+        source.biz = source.biz or biz
+    article.appmsgid = (
+        article.appmsgid
+        or extract_js_value(raw_html, "appmsgid")
+        or extract_js_value(raw_html, "mid")
+    )
+    itemidx = extract_js_value(raw_html, "idx")
+    if article.itemidx is None and itemidx and itemidx.isdigit():
+        article.itemidx = int(itemidx)
+    session.last_used_at = datetime.now(UTC)
+    await db.commit()
+    return ArticleOriginalUrlResponse(original_url=resolved_url)
 
 
 @router.get("/{article_id}", response_model=ArticleDetailResponse)

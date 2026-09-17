@@ -8,7 +8,7 @@ from html import escape, unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, TypedDict
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from playwright.async_api import async_playwright
@@ -115,6 +115,31 @@ def decode_js_string(value: str) -> str:
         return str(ast.literal_eval(f"'{value}'"))
     except (SyntaxError, ValueError):
         return value.encode("utf-8").decode("unicode_escape", errors="ignore")
+
+
+def is_weread_content_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc.lower() == "weread.qq.com" and parsed.path == "/web/mp/content"
+
+
+def extract_original_article_url(raw_html: str) -> str | None:
+    candidates = [
+        extract_meta_content(raw_html, "og:url"),
+        extract_js_value(raw_html, "msg_link"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        url = unescape(decode_js_string(candidate)).strip()
+        if url.startswith("//"):
+            url = f"https:{url}"
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc.lower() in {
+            "mp.weixin.qq.com",
+            "mp.weixin.qq.com.cn",
+        }:
+            return url
+    return None
 
 
 def extract_jsdecode_field(html: str, name: str) -> str | None:
@@ -835,6 +860,10 @@ async def fetch_article_content(
             fetch_cookies = None
             if not content_html:
                 raise ArticleFetchError("微信读书返回内容中没有找到正文内容。") from exc
+
+        resolved_original_url = extract_original_article_url(raw_html)
+        if resolved_original_url:
+            article.original_url = resolved_original_url
 
         clean_result = clean_article_html_with_media(
             content_html,

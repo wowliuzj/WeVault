@@ -1270,7 +1270,7 @@ async function refreshArticle(article: Article) {
 
 async function viewArticle(article: Article) {
   if (article.content_status !== "fetched") {
-    window.open(article.original_url, "_blank", "noopener,noreferrer");
+    await viewOriginalArticle(article);
     return;
   }
 
@@ -1281,7 +1281,7 @@ async function viewArticle(article: Article) {
     });
     if (!detail.content_clean_html && !detail.content_plain_text) {
       showToast("error", "本地正文为空，已打开原文");
-      window.open(article.original_url, "_blank", "noopener,noreferrer");
+      await viewOriginalArticle(article);
       return;
     }
     articleDetail.value = detail;
@@ -1296,8 +1296,48 @@ function closeArticleDetail() {
   articleDetail.value = null;
 }
 
-function viewOriginalArticle(article: Article) {
-  window.open(article.original_url, "_blank", "noopener,noreferrer");
+function isWereadContentUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "weread.qq.com" && parsed.pathname === "/web/mp/content";
+  } catch {
+    return false;
+  }
+}
+
+async function viewOriginalArticle(article: Article) {
+  if (!isWereadContentUrl(article.original_url)) {
+    window.open(article.original_url, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  const popup = window.open("about:blank", "_blank");
+  if (popup) {
+    popup.opener = null;
+    popup.document.title = "正在解析原文链接…";
+    popup.document.body.textContent = "正在解析原文链接，请稍候…";
+  }
+  articleOperatingId.value = article.id;
+  try {
+    const result = await apiRequest<{ original_url: string }>(
+      `/articles/${article.id}/resolve-original-url`,
+      { method: "POST", headers: authHeaders() },
+    );
+    article.original_url = result.original_url;
+    if (articleDetail.value?.id === article.id) {
+      articleDetail.value.original_url = result.original_url;
+    }
+    if (popup) {
+      popup.location.href = result.original_url;
+    } else {
+      window.open(result.original_url, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    popup?.close();
+    showToast("error", error instanceof Error ? error.message : "解析原文链接失败");
+  } finally {
+    articleOperatingId.value = "";
+  }
 }
 
 function replaceArticleInList(article: Article) {
@@ -4210,14 +4250,14 @@ onBeforeUnmount(() => {
               </span>
             </p>
           </div>
-          <a
+          <button
             class="small-button"
-            :href="articleDetail.original_url"
-            target="_blank"
-            rel="noreferrer"
+            type="button"
+            :disabled="articleOperatingId === articleDetail.id"
+            @click="viewOriginalArticle(articleDetail)"
           >
-            原文
-          </a>
+            {{ articleOperatingId === articleDetail.id ? "解析中..." : "原文" }}
+          </button>
         </div>
         <article v-if="articleDetailHtml" class="article-detail-body" v-html="articleDetailHtml"></article>
         <pre v-else class="article-detail-text">{{ articleDetail.content_plain_text }}</pre>
