@@ -737,7 +737,17 @@ async def upsert_article(
     cookies: list[dict[str, Any]] | None,
 ) -> Article | None:
     article = None
-    if article_data["appmsgid"] and article_data["itemidx"] is not None:
+    weread_review_id = article_data.get("weread_review_id")
+    if weread_review_id:
+        result = await db.execute(
+            select(Article).where(
+                Article.user_id == source.user_id,
+                Article.weread_review_id == weread_review_id,
+            )
+        )
+        article = result.scalar_one_or_none()
+
+    if article is None and article_data["appmsgid"] and article_data["itemidx"] is not None:
         result = await db.execute(
             select(Article).where(
                 Article.source_id == source.id,
