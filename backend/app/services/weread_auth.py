@@ -10,7 +10,7 @@ from app.models.enums import TokenStatus, WechatLoginStatus
 from app.models.user import User
 from app.models.wechat import WereadLoginSession, WereadSession
 from app.schemas.weread import WereadLoginSessionResponse, WereadSessionResponse
-from app.services.weread_client import WereadClient, get_active_weread_session
+from app.services.weread_browser_session import weread_browser_session_manager
 from app.services.weread_login_driver import WereadLoginError, weread_login_manager
 
 
@@ -71,17 +71,14 @@ async def get_login(
 
 
 async def refresh_session(db: AsyncSession, user: User) -> WereadSessionResponse:
-    session, credentials = await get_active_weread_session(db, user)
-    info = await WereadClient(credentials).renew_and_verify()
-    await db.refresh(session)
-    session.status = TokenStatus.VALID
-    session.last_verified_at = datetime.now(UTC)
-    session.last_used_at = session.last_verified_at
-    session.nickname = info.get("name") or info.get("nickname") or session.nickname
-    await db.commit()
+    await weread_browser_session_manager.refresh_user(user.id)
+    await db.rollback()
+    session = (
+        await db.execute(select(WereadSession).where(WereadSession.user_id == user.id))
+    ).scalar_one()
     return WereadSessionResponse(
         status=session.status.value,
-        nickname=info.get("name") or info.get("nickname"),
+        nickname=session.nickname,
         last_verified_at=session.last_verified_at,
         last_renewed_at=session.last_renewed_at,
         expires_at=session.expires_at,
@@ -95,3 +92,4 @@ async def logout(db: AsyncSession, user: User) -> None:
         session.status = TokenStatus.INVALID
         session.credentials_encrypted = None
         await db.commit()
+    await weread_browser_session_manager.clear_profile(user.id)

@@ -2628,7 +2628,7 @@ onBeforeUnmount(() => {
           <div v-if="wereadLoading" class="auth-box">正在读取微信读书授权状态</div>
           <div v-else-if="wereadSession" class="auth-box">
             <div class="auth-state"><span class="activity-dot" :class="hasValidWereadAuthorization ? 'success' : 'pending'"></span><div>
-              <strong>微信读书授权{{ hasValidWereadAuthorization ? "有效（支持自动续期）" : "不可用" }}</strong>
+              <strong>微信读书授权{{ hasValidWereadAuthorization ? "有效（浏览器自动保活）" : "不可用" }}</strong>
               <span>{{ wereadSession.nickname || "微信读书用户" }}</span><span>最近验证：{{ formatDateTime(wereadSession.last_verified_at) }}</span><span>最近续期：{{ formatDateTime(wereadSession.last_renewed_at) }}</span>
             </div></div>
             <div class="inline-actions auth-row-actions">

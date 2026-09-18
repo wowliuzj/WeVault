@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     auto_fetch_schedule_time: str = "03:00"
     auto_fetch_lookback_days: int = 2
     wechat_browser_headless: bool = True
+    weread_profile_dir: str = str(BACKEND_DIR.parent / "storage" / "weread-profiles")
+    weread_keepalive_initial_delay_seconds: int = 10
+    weread_keepalive_interval_seconds: int = 60 * 30
+    weread_keepalive_stagger_seconds: int = 5
+    weread_browser_settle_milliseconds: int = 3_000
     wechat_login_timeout_seconds: int = 300
     cors_origins: list[str] = [
         "http://localhost:5725",

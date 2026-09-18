@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.services.admin_bootstrap import ensure_configured_admin
 from app.services.wechat_login_driver import wechat_login_manager
+from app.services.weread_browser_session import weread_browser_session_manager
 from app.services.weread_login_driver import weread_login_manager
 
 
@@ -26,11 +27,13 @@ def create_app() -> FastAPI:
     async def bootstrap_admin() -> None:
         async with AsyncSessionLocal() as db:
             await ensure_configured_admin(db)
+        await weread_browser_session_manager.start()
 
     @app.on_event("shutdown")
     async def shutdown_wechat_login_driver() -> None:
         await wechat_login_manager.close_all()
         await weread_login_manager.close_all()
+        await weread_browser_session_manager.close()
 
     return app
 

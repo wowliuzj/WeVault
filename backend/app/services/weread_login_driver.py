@@ -18,6 +18,7 @@ from app.db.session import AsyncSessionLocal
 from app.models.enums import TokenStatus, WechatLoginStatus
 from app.models.wechat import WereadLoginSession, WereadSession
 from app.services.secret_box import encrypt_text
+from app.services.weread_browser_session import weread_browser_session_manager
 from app.services.weread_client import WEREAD_BASE_URL, WEREAD_HEADERS, WereadClient
 
 
@@ -184,6 +185,7 @@ class WereadLoginManager:
                 "nickname": user_info.get("name") or user_info.get("nickname"),
             }
             await db.commit()
+        await weread_browser_session_manager.initialize(user_id)
 
     async def _update(
         self,
