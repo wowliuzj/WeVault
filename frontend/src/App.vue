@@ -2628,8 +2628,8 @@ onBeforeUnmount(() => {
           <div v-if="wereadLoading" class="auth-box">正在读取微信读书授权状态</div>
           <div v-else-if="wereadSession" class="auth-box">
             <div class="auth-state"><span class="activity-dot" :class="hasValidWereadAuthorization ? 'success' : 'pending'"></span><div>
-              <strong>微信读书授权{{ hasValidWereadAuthorization ? "有效" : "不可用" }}</strong>
-              <span>{{ wereadSession.nickname || "微信读书用户" }}</span><span>最近验证：{{ formatDateTime(wereadSession.last_verified_at) }}</span>
+              <strong>微信读书授权{{ hasValidWereadAuthorization ? "有效（支持自动续期）" : "不可用" }}</strong>
+              <span>{{ wereadSession.nickname || "微信读书用户" }}</span><span>最近验证：{{ formatDateTime(wereadSession.last_verified_at) }}</span><span>最近续期：{{ formatDateTime(wereadSession.last_renewed_at) }}</span>
             </div></div>
             <div class="inline-actions auth-row-actions">
               <button class="ghost-button" type="button" :disabled="wereadRefreshLoading" @click="refreshWereadSession">{{ wereadRefreshLoading ? "刷新中..." : "刷新授权" }}</button>
@@ -4006,7 +4006,7 @@ onBeforeUnmount(() => {
         <button class="modal-close" type="button" aria-label="关闭微信读书扫码" @click="closeWereadLogin">×</button>
         <div class="modal-header"><div><h2>微信读书扫码授权</h2><p>请使用微信扫描二维码，并在手机端确认登录。</p></div></div>
         <div v-if="wereadLoginError" class="auth-error">{{ wereadLoginError }}</div>
-        <div v-else-if="wereadLoginSession" class="wechat-login-box"><div class="qr-box"><img v-if="wereadLoginSession.qr_url" :src="wereadLoginSession.qr_url" alt="微信读书登录二维码" /><span v-else>QR</span></div><div><strong>状态：{{ wereadLoginSession.status }}</strong><span>{{ wereadLoginSession.message || "等待微信扫码确认" }}</span><span>过期时间：{{ wereadLoginSession.expires_at }}</span></div></div>
+        <div v-else-if="wereadLoginSession" class="wechat-login-box"><div class="qr-box"><img v-if="wereadLoginSession.qr_url" :src="wereadLoginSession.qr_url" alt="微信读书登录二维码" /><span v-else>QR</span></div><div><strong>状态：{{ wereadLoginSession.status }}</strong><span>{{ wereadLoginSession.message || "等待微信扫码确认" }}</span><span>二维码过期时间：{{ wereadLoginSession.expires_at }}</span></div></div>
       </section>
     </div>
 

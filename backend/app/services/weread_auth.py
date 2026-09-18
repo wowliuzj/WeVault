@@ -33,6 +33,7 @@ async def current_session(db: AsyncSession, user: User) -> WereadSessionResponse
         status=session.status.value,
         nickname=session.nickname,
         last_verified_at=session.last_verified_at,
+        last_renewed_at=session.last_renewed_at,
         expires_at=session.expires_at,
     )
 
@@ -71,7 +72,8 @@ async def get_login(
 
 async def refresh_session(db: AsyncSession, user: User) -> WereadSessionResponse:
     session, credentials = await get_active_weread_session(db, user)
-    info = await WereadClient(credentials).verify()
+    info = await WereadClient(credentials).renew_and_verify()
+    await db.refresh(session)
     session.status = TokenStatus.VALID
     session.last_verified_at = datetime.now(UTC)
     session.last_used_at = session.last_verified_at
@@ -81,6 +83,7 @@ async def refresh_session(db: AsyncSession, user: User) -> WereadSessionResponse
         status=session.status.value,
         nickname=info.get("name") or info.get("nickname"),
         last_verified_at=session.last_verified_at,
+        last_renewed_at=session.last_renewed_at,
         expires_at=session.expires_at,
     )
 

@@ -37,6 +37,7 @@ export type WereadSession = {
   status: "valid" | "expired" | "invalid" | "unknown";
   nickname: string | null;
   last_verified_at: string | null;
+  last_renewed_at: string | null;
   expires_at: string | null;
 };
 

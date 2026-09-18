@@ -151,3 +151,73 @@ async def test_fetch_content_retries_empty_response(
 
     assert await client.fetch_content("review-id") == html
     assert sleeps == [0.8]
+
+
+def test_credentials_headers_include_complete_cookie_set() -> None:
+    from app.services.weread_client import credentials_headers
+
+    headers = credentials_headers(
+        {
+            "vid": "test-vid",
+            "skey": "test-skey",
+            "refresh_token": "web@test-refresh",
+            "cookies": {"wr_gid": "gid", "wr_fp": "fp"},
+        }
+    )
+
+    assert headers["x-vid"] == "test-vid"
+    assert headers["x-skey"] == "test-skey"
+    assert "wr_vid=test-vid" in headers["Cookie"]
+    assert "wr_skey=test-skey" in headers["Cookie"]
+    assert "wr_rt=web%40test-refresh" in headers["Cookie"]
+    assert "wr_gid=gid" in headers["Cookie"]
+    assert "wr_fp=fp" in headers["Cookie"]
+
+
+@pytest.mark.asyncio
+async def test_request_renews_cookie_and_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_calls = 0
+    post_calls = 0
+
+    async def fake_get(self, path, **kwargs) -> httpx.Response:
+        nonlocal get_calls
+        get_calls += 1
+        request = httpx.Request("GET", f"https://weread.qq.com{path}")
+        if get_calls == 1:
+            return httpx.Response(
+                200,
+                request=request,
+                json={"errCode": -2012, "errMsg": "登录超时"},
+            )
+        assert self.cookies.get("wr_skey") == "renewed-skey"
+        return httpx.Response(200, request=request, json={"reviews": []})
+
+    async def fake_post(self, path, **kwargs) -> httpx.Response:
+        nonlocal post_calls
+        post_calls += 1
+        assert path == "/web/login/renewal"
+        assert self.cookies.get("wr_rt") == "web%40refresh-token"
+        self.cookies.set("wr_skey", "renewed-skey", domain="weread.qq.com", path="/")
+        request = httpx.Request("POST", f"https://weread.qq.com{path}")
+        return httpx.Response(200, request=request, json={"errCode": 0})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    credentials = {
+        "vid": "test-vid",
+        "skey": "expired-skey",
+        "refresh_token": "web@refresh-token",
+        "cookies": {
+            "wr_vid": "test-vid",
+            "wr_skey": "expired-skey",
+            "wr_rt": "web%40refresh-token",
+        },
+    }
+
+    response = await WereadClient(credentials).request("/web/mp/articles")
+
+    assert response.json() == {"reviews": []}
+    assert get_calls == 2
+    assert post_calls == 1
+    assert credentials["skey"] == "renewed-skey"
+    assert credentials["cookies"]["wr_skey"] == "renewed-skey"

@@ -7,6 +7,7 @@ class WereadSessionResponse(BaseModel):
     status: str
     nickname: str | None = None
     last_verified_at: datetime | None
+    last_renewed_at: datetime | None
     expires_at: datetime | None
 
 
