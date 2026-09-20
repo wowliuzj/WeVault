@@ -181,6 +181,7 @@ const selectedArticleIds = ref<Set<string>>(new Set());
 const articleMode = ref<ArticleLibraryMode>("active");
 const articleBatchDeleting = ref(false);
 const articleBatchRestoring = ref(false);
+const articleBatchPermanentlyDeleting = ref(false);
 const articleDetail = ref<ArticleDetail | null>(null);
 const articleViewLoadingId = ref("");
 const articleUrlModalOpen = ref(false);
@@ -1418,6 +1419,69 @@ async function deleteSelectedArticles() {
     showToast("error", error instanceof Error ? error.message : "批量删除文章失败");
   } finally {
     articleBatchDeleting.value = false;
+  }
+}
+
+async function permanentlyDeleteArticle(article: Article) {
+  const confirmed = window.confirm(
+    `彻底删除文章「${article.title}」？此操作无法恢复，之后可通过抓取任务重新采集。`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  articleOperatingId.value = article.id;
+  try {
+    await apiRequest(`/articles/${article.id}/permanent`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    selectedArticleIds.value = new Set(
+      [...selectedArticleIds.value].filter((articleId) => articleId !== article.id),
+    );
+    showToast("success", "文章已彻底删除，可重新抓取");
+    await loadArticles();
+    await loadDashboardArticles();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "彻底删除文章失败");
+  } finally {
+    articleOperatingId.value = "";
+  }
+}
+
+async function permanentlyDeleteSelectedArticles() {
+  const articleIds = [...selectedArticleIds.value];
+  if (articleIds.length === 0) {
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `彻底删除选中的 ${articleIds.length} 篇文章？此操作无法恢复，之后可通过抓取任务重新采集。`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  articleBatchPermanentlyDeleting.value = true;
+  try {
+    const response = await apiRequest<{ deleted: number }>(
+      "/articles/batch-permanent-delete",
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ article_ids: articleIds }),
+      },
+    );
+    selectedArticleIds.value = new Set();
+    showToast("success", `已彻底删除 ${response.deleted} 篇文章，可重新抓取`);
+    await loadArticles();
+    await loadDashboardArticles();
+    await loadSources();
+  } catch (error) {
+    showToast("error", error instanceof Error ? error.message : "批量彻底删除文章失败");
+  } finally {
+    articleBatchPermanentlyDeleting.value = false;
   }
 }
 
@@ -3126,6 +3190,15 @@ onBeforeUnmount(() => {
               {{ articleBatchRestoring ? "恢复中..." : "恢复文章" }}
             </button>
             <button
+              v-if="isArticleTrashMode"
+              class="link-button danger"
+              type="button"
+              :disabled="articleBatchPermanentlyDeleting"
+              @click="permanentlyDeleteSelectedArticles"
+            >
+              {{ articleBatchPermanentlyDeleting ? "删除中..." : "彻底删除" }}
+            </button>
+            <button
               v-else
               class="link-button danger"
               type="button"
@@ -3242,6 +3315,14 @@ onBeforeUnmount(() => {
                           @click="restoreArticle(article)"
                         >
                           恢复
+                        </button>
+                        <button
+                          class="link-button danger"
+                          type="button"
+                          :disabled="articleOperatingId === article.id"
+                          @click="permanentlyDeleteArticle(article)"
+                        >
+                          彻底删除
                         </button>
                       </template>
                       <template v-else>
@@ -3369,6 +3450,14 @@ onBeforeUnmount(() => {
                         @click="restoreArticle(article)"
                       >
                         恢复
+                      </button>
+                      <button
+                        class="link-button danger"
+                        type="button"
+                        :disabled="articleOperatingId === article.id"
+                        @click="permanentlyDeleteArticle(article)"
+                      >
+                        彻底删除
                       </button>
                     </template>
                     <template v-else>

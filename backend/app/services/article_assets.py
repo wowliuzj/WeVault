@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,24 @@ def delete_article_cover_file(article: Article) -> None:
     cover_file.unlink(missing_ok=True)
     article.cover_storage_path = None
     article.cover_content_type = None
+
+
+def delete_article_files(article: Article) -> None:
+    storage_root = Path(settings.asset_storage_dir).resolve()
+    if article.cover_storage_path:
+        cover_file = (storage_root / article.cover_storage_path).resolve()
+        if cover_file.is_relative_to(storage_root):
+            try:
+                cover_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    asset_dir = (storage_root / "article-assets" / str(article.id)).resolve()
+    if asset_dir.is_relative_to(storage_root) and asset_dir.is_dir():
+        try:
+            shutil.rmtree(asset_dir)
+        except OSError:
+            pass
 
 
 async def cache_article_cover(

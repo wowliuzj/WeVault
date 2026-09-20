@@ -11,11 +11,17 @@ class FakeDb:
 
 
 @pytest.mark.asyncio
-async def test_weread_list_only_does_not_fetch_article_content(
+async def test_weread_list_only_resolves_original_url_without_fetching_content_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = SimpleNamespace(last_used_at=None)
     saved: list[dict] = []
+    fetched_review_ids: list[str] = []
+    existing_article = SimpleNamespace(
+        original_url="https://weread.qq.com/web/mp/content?reviewId=MP_WXS_123_review",
+        weread_review_id=None,
+        weread_original_id=None,
+    )
 
     async def fake_get_session(db, user):
         return session, {"vid": "test", "skey": "test"}
@@ -37,11 +43,16 @@ async def test_weread_list_only_does_not_fetch_article_content(
             ]
 
         async def fetch_content(self, review_id: str) -> str:
-            raise AssertionError("list-only fetch must not request article content")
+            fetched_review_ids.append(review_id)
+            return (
+                '<meta property="og:url" '
+                'content="https://mp.weixin.qq.com/s?__biz=test&amp;mid=123&amp;idx=1">'
+                '<script>var appmsgid = "123"; var idx = "1"; var biz = "test";</script>'
+            )
 
     async def fake_upsert_article(db, source, account_id, article_data, **kwargs):
         saved.append(article_data)
-        return None
+        return existing_article
 
     monkeypatch.setattr(task_worker, "get_active_weread_session", fake_get_session)
     monkeypatch.setattr(task_worker, "WereadClient", FakeClient)
@@ -62,9 +73,9 @@ async def test_weread_list_only_does_not_fetch_article_content(
 
     await task_worker._fetch_source_articles_weread(FakeDb(), task, source, object())
 
+    assert fetched_review_ids == ["MP_WXS_123_review"]
     assert saved[0]["weread_review_id"] == "MP_WXS_123_review"
-    # This endpoint is retained only as an internal marker until the real
-    # mp.weixin.qq.com URL is lazily resolved; it must never be opened directly.
     assert saved[0]["original_url"] == (
-        "https://weread.qq.com/web/mp/content?reviewId=MP_WXS_123_review"
+        "https://mp.weixin.qq.com/s?__biz=test&mid=123&idx=1"
     )
+    assert existing_article.original_url == saved[0]["original_url"]

@@ -22,6 +22,7 @@ from app.services.article_assets import cache_article_cover
 from app.services.article_fetcher import (
     extract_js_value,
     extract_meta_content,
+    extract_original_article_url,
     fetch_article_content,
 )
 from app.services.export_cleanup import cleanup_expired_exports
@@ -286,20 +287,11 @@ async def _fetch_source_articles_weread(
                 continue
             if limit and saved_count >= limit:
                 break
-            raw_html = await client.fetch_content(review_id) if fetch_content else ""
-            original_url = (
-                extract_meta_content(raw_html, "og:url") or extract_js_value(raw_html, "msg_link")
-                if raw_html
-                else None
-            )
-            appmsgid = (
-                extract_js_value(raw_html, "appmsgid") or extract_js_value(raw_html, "mid")
-                if raw_html
-                else None
-            )
-            itemidx = extract_js_value(raw_html, "idx") if raw_html else None
-            itemidx = itemidx or "1"
-            biz = extract_js_value(raw_html, "biz") if raw_html else None
+            raw_html = await client.fetch_content(review_id)
+            original_url = extract_original_article_url(raw_html)
+            appmsgid = extract_js_value(raw_html, "appmsgid") or extract_js_value(raw_html, "mid")
+            itemidx = extract_js_value(raw_html, "idx") or "1"
+            biz = extract_js_value(raw_html, "biz")
             if biz and not source.biz:
                 source.biz = biz
             article_data = {
@@ -330,6 +322,8 @@ async def _fetch_source_articles_weread(
             if article:
                 article.weread_review_id = review_id
                 article.weread_original_id = item.get("originalId")
+                if original_url:
+                    article.original_url = original_url
                 if fetch_content and article.content_status != FetchStatus.FETCHED:
                     await fetch_article_content(
                         db,

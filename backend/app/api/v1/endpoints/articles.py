@@ -9,7 +9,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse, Response
 
@@ -23,6 +23,7 @@ from app.models.wechat import WechatSource
 from app.services.article_assets import (
     ArticleAssetError,
     cache_article_cover,
+    delete_article_files,
     get_article_content_asset_file,
     get_article_cover_file,
     is_allowed_wechat_image_url,
@@ -676,6 +677,22 @@ async def delete_articles(
     return {"deleted": len(articles)}
 
 
+@router.post("/batch-permanent-delete")
+async def permanently_delete_articles(
+    payload: ArticleBatchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    articles = await validate_user_articles(db, current_user, payload.article_ids, deleted=True)
+    article_ids = [article.id for article in articles]
+    await db.execute(delete(ArticleContent).where(ArticleContent.article_id.in_(article_ids)))
+    await db.execute(delete(Article).where(Article.id.in_(article_ids)))
+    await db.commit()
+    for article in articles:
+        delete_article_files(article)
+    return {"deleted": len(articles)}
+
+
 @router.post("/batch-restore")
 async def restore_articles(
     payload: ArticleBatchRequest,
@@ -687,6 +704,21 @@ async def restore_articles(
         article.deleted_at = None
     await db.commit()
     return {"restored": len(articles)}
+
+
+@router.delete("/{article_id}/permanent")
+async def permanently_delete_article(
+    article_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
+    articles = await validate_user_articles(db, current_user, [article_id], deleted=True)
+    article = articles[0]
+    await db.execute(delete(ArticleContent).where(ArticleContent.article_id == article.id))
+    await db.delete(article)
+    await db.commit()
+    delete_article_files(article)
+    return {"ok": True}
 
 
 @router.post("/{article_id}/restore", response_model=ArticleResponse)
