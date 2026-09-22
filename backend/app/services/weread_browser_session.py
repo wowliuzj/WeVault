@@ -256,7 +256,13 @@ class WereadBrowserSessionManager:
 
     async def _keepalive_loop(self) -> None:
         await asyncio.sleep(settings.weread_keepalive_initial_delay_seconds)
+        logger.info(
+            "WeRead browser keepalive started interval=%ss stagger=%ss",
+            settings.weread_keepalive_interval_seconds,
+            settings.weread_keepalive_stagger_seconds,
+        )
         while True:
+            cycle_started_at = datetime.now(UTC)
             try:
                 async with AsyncSessionLocal() as db:
                     user_ids = list(
@@ -269,14 +275,31 @@ class WereadBrowserSessionManager:
                             )
                         ).scalars()
                     )
+                logger.info(
+                    "WeRead browser keepalive cycle started at=%s users=%s",
+                    cycle_started_at.isoformat(),
+                    len(user_ids),
+                )
                 for user_id in user_ids:
+                    logger.info("WeRead browser keepalive refreshing user=%s", user_id)
                     try:
                         await self.refresh_user(user_id, mark_expired=False)
                     except Exception as exc:
                         logger.warning(
                             "WeRead browser keepalive failed user=%s error=%s", user_id, exc
                         )
+                    else:
+                        logger.info(
+                            "WeRead browser keepalive succeeded user=%s finished_at=%s",
+                            user_id,
+                            datetime.now(UTC).isoformat(),
+                        )
                     await asyncio.sleep(settings.weread_keepalive_stagger_seconds)
+                logger.info(
+                    "WeRead browser keepalive cycle finished at=%s users=%s",
+                    datetime.now(UTC).isoformat(),
+                    len(user_ids),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
