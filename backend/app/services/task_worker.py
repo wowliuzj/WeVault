@@ -287,11 +287,18 @@ async def _fetch_source_articles_weread(
                 continue
             if limit and saved_count >= limit:
                 break
-            raw_html = await client.fetch_content(review_id)
-            original_url = extract_original_article_url(raw_html)
-            appmsgid = extract_js_value(raw_html, "appmsgid") or extract_js_value(raw_html, "mid")
-            itemidx = extract_js_value(raw_html, "idx") or "1"
-            biz = extract_js_value(raw_html, "biz")
+            raw_html = await client.fetch_content(review_id) if fetch_content else ""
+            original_url = (
+                extract_original_article_url(raw_html) if raw_html else None
+            )
+            appmsgid = (
+                extract_js_value(raw_html, "appmsgid") or extract_js_value(raw_html, "mid")
+                if raw_html
+                else None
+            )
+            itemidx = extract_js_value(raw_html, "idx") if raw_html else None
+            itemidx = itemidx or "1"
+            biz = extract_js_value(raw_html, "biz") if raw_html else None
             if biz and not source.biz:
                 source.biz = biz
             article_data = {
