@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import logging
 import re
 from datetime import UTC, datetime
 from html import escape, unescape
@@ -26,6 +27,8 @@ from app.services.article_assets import (
 )
 from app.services.wechat_login_driver import MP_HEADERS, wechat_login_manager
 from app.services.weread_client import WereadClient, credentials_headers
+
+logger = logging.getLogger(__name__)
 
 ARTICLE_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -852,9 +855,19 @@ async def fetch_article_content(
             primary_error = exc
             if not article.weread_review_id or weread_credentials is None:
                 raise
-            raw_html = prefetched_weread_html or await WereadClient(
-                weread_credentials
-            ).fetch_content(article.weread_review_id)
+            try:
+                raw_html = prefetched_weread_html or await WereadClient(
+                    weread_credentials
+                ).fetch_content(article.weread_review_id)
+            except Exception as weread_exc:
+                logger.warning(
+                    "WeRead content fallback failed article=%s review_id=%s title=%s error=%s",
+                    article.id,
+                    article.weread_review_id,
+                    article.title,
+                    weread_exc,
+                )
+                raise
             content_html = extract_article_content_html(raw_html)
             fetch_source = "weread.qq.com"
             fetch_cookies = None

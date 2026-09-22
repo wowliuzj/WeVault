@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, TypeVar
@@ -29,6 +30,7 @@ WEREAD_HEADERS = {
 }
 _AUTH_ERROR_CODES = {-2012, -2041, "-2012", "-2041"}
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class WereadError(RuntimeError):
@@ -348,13 +350,31 @@ class WereadClient:
         for attempt in range(3):
             response = await self.request("/web/mp/content", params={"reviewId": review_id})
             content = response.text
+            content_length = len(content)
+            logger.info(
+                "WeRead content response review_id=%s attempt=%s status=%s content_length=%s content_type=%s",
+                review_id,
+                attempt + 1,
+                response.status_code,
+                content_length,
+                response.headers.get("content-type", ""),
+            )
             if content.strip():
                 markers = ("js_content", "window.cgiDataNew", "content_noencode")
                 if not any(marker in content for marker in markers):
+                    logger.warning(
+                        "WeRead content response has no recognized markers review_id=%s content_length=%s",
+                        review_id,
+                        content_length,
+                    )
                     raise WereadError("微信读书返回内容中没有识别到文章正文。")
                 return content
             if attempt < 2:
                 await asyncio.sleep(0.8 * (attempt + 1))
+        logger.warning(
+            "WeRead content response remained empty review_id=%s attempts=3",
+            review_id,
+        )
         raise WereadError("微信读书正文接口连续返回空内容，请稍后重试。")
 
     async def list_shelf_mps(self) -> list[dict[str, Any]]:
